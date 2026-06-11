@@ -184,10 +184,24 @@ async function commandDoctor() {
   const codexAppExe  = path.join(codexAppDir, "Codex.exe");
   const codexBinExe  = path.join(codexAppDir, "bin", "codex.exe");
 
-  row(fs.existsSync(codexAppDir),  "Codex Desktop App installed", codexAppDir);
-  row(fs.existsSync(codexAppExe),  "Codex Desktop App exe",       codexAppExe);
-  row(fs.existsSync(codexBinExe) || codexPath === "codex",
-                                   "codex.exe CLI binary",         codexPath);
+  // Robust UWP (Microsoft Store) package detection
+  const packagesDir = path.join(localAppData, "Packages");
+  let uwpDirName = "";
+  if (fs.existsSync(packagesDir)) {
+    try {
+      const dirs = fs.readdirSync(packagesDir);
+      const found = dirs.find((d) => d.startsWith("OpenAI.Codex_"));
+      if (found) uwpDirName = found;
+    } catch (_) {}
+  }
+
+  const hasAppDir = fs.existsSync(codexAppDir);
+  const hasAppExe = fs.existsSync(codexAppExe);
+  const isUwpInstalled = uwpDirName !== "";
+
+  row(hasAppDir || isUwpInstalled, "Codex Desktop App installed", isUwpInstalled ? `UWP package (${uwpDirName})` : codexAppDir);
+  row(hasAppExe || isUwpInstalled, "Codex Desktop App execution", isUwpInstalled ? "UWP App Alias" : (hasAppExe ? codexAppExe : "not found"));
+  row(fs.existsSync(codexBinExe) || codexPath === "codex", "codex.exe CLI binary", codexPath);
 
   const ver = await tryCommand(codexPath, ["--version"]);
   row(ver.ok, "codex --version", ver.output || "not found");
@@ -230,6 +244,61 @@ async function commandDoctor() {
                                    && !agyStatus.output.toLowerCase().includes("not logged");
   row(agyLoggedIn, "Antigravity auth (agy status)",
     agyStatus.ok ? (agyLoggedIn ? agyStatus.output.split("\n")[0] : "NOT logged in — run: agy login") : "agy CLI not available");
+
+  // ── INSTALLATION ASSISTANCE ────────────────────────────────────────────────
+  const missing = [];
+  if (!hasAppDir && !isUwpInstalled) {
+    missing.push({
+      name: "Codex Desktop App",
+      command: "winget install OpenAI.Codex"
+    });
+  }
+  if (!fs.existsSync(codexBinExe) && codexPath !== "codex") {
+    missing.push({
+      name: "Codex CLI",
+      command: "npm install -g @openai/codex-cli"
+    });
+  }
+  if (!ver.ok) {
+    missing.push({
+      name: "Codex CLI (runnable)",
+      command: "npm install -g @openai/codex-cli"
+    });
+  }
+  if (!whoami.ok) {
+    missing.push({
+      name: "Codex Authentication",
+      command: "codex login"
+    });
+  }
+  const hasAgyApp = fs.existsSync(agyAppDir);
+  if (!hasAgyApp) {
+    missing.push({
+      name: "Antigravity Desktop App",
+      command: "Download from https://antigravity.google/download"
+    });
+  }
+  if (!agyVer.ok) {
+    missing.push({
+      name: "Antigravity CLI (agy)",
+      command: "powershell -Command \"irm https://antigravity.google/cli/install.ps1 | iex\""
+    });
+  }
+  if (!agyLoggedIn && agyVer.ok) {
+    missing.push({
+      name: "Antigravity Authentication",
+      command: "agy login"
+    });
+  }
+
+  if (missing.length > 0) {
+    header("INSTALLATION ASSISTANCE");
+    console.log("Some components are missing or unconfigured. Here is how to get them:");
+    for (const item of missing) {
+      console.log(`\n* ${item.name}:`);
+      console.log(`  Run: ${item.command}`);
+    }
+  }
 }
 
 async function commandDaemon(args) {
