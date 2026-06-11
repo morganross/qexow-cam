@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-manager",
-  "version": "0.1.0",
+  "version": "1.8.0",
   "private": true,
   "description": "Local Codex app-server-backed agent registry and message bus.",
   "type": "module",
