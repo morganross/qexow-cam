@@ -11,9 +11,13 @@
   "scripts": {
     "doctor": "node ./bin/cam.js doctor",
     "daemon": "node ./bin/cam.js daemon start",
-    "test:smoke": "node ./scripts/smoke-local.js"
+    "test:smoke": "node ./scripts/smoke-local.js",
+    "build": "pkg ./bin/cam.js -t node18-win-x64 -o dist/cam.exe && pkg ./bin/codex-send.js -t node18-win-x64 -o dist/codex-send.exe"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
   }
 }
