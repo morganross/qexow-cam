@@ -13,15 +13,19 @@ SetupIconFile=compiler:SetupClassicIcon.ico
 
 [Files]
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\cam-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+Name: "{group}\Codex Agent Manager"; Filename: "{app}\cam-tray.exe"
 Name: "{group}\Uninstall Codex Agent Manager"; Filename: "{uninstallexe}"
 
 [Registry]
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Codex Agent Manager Tray"; ValueData: "{app}\cam-tray.exe"
 
 [Run]
 Filename: "{app}\cam.exe"; Parameters: "install-service"; Description: "Install background daemon service"; Flags: postinstall runhidden
+Filename: "{app}\cam-tray.exe"; Description: "Launch System Tray Icon"; Flags: postinstall nowait
 
 [Code]
 function NeedsAddPath(Param: string): boolean;

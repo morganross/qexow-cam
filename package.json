@@ -11,7 +11,7 @@
     "doctor": "node ./bin/cam.js doctor",
     "daemon": "node ./bin/cam.js daemon start",
     "test:smoke": "node ./scripts/smoke-local.js",
-    "build": "pkg . -t node18-win-x64 --out-path dist"
+    "build": "pkg . -t node18-win-x64 --out-path dist && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /target:winexe /out:dist\\cam-tray.exe src\\tray\\CamTray.cs"
   },
   "engines": {
     "node": ">=18"

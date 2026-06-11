@@ -35,3 +35,4 @@ jobs:
         files: |
           dist/CodexAgentManagerSetup.exe
           dist/cam.exe
+          dist/cam-tray.exe
