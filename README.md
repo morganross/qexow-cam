@@ -56,9 +56,20 @@ On daemon start, CAM also rehydrates any already-registered agents with saved th
 .\cam.cmd agent create backend-local --cwd "C:\path\to\workspace" --model gpt-5.3-codex-spark --model-provider openai
 .\cam.cmd agent list
 .\cam.cmd agent read backend-local
-.\codex-send.cmd backend-local "Please reply with your node name and cwd."
 .\cam.cmd inbox backend-local
 .\cam.cmd logs
+```
+
+### Sending Messages
+
+Message routing is the core function of the Codex Agent Manager. You can easily send messages to any registered agent using the native `send` command. 
+
+```powershell
+.\cam.cmd send backend-local "Please reply with your node name and cwd."
+```
+Optionally, specify which agent the message is from:
+```powershell
+.\cam.cmd send backend-local "Are you alive?" --from frontend-local
 ```
 
 ### Bulk model / effort / speed switching
@@ -93,7 +104,7 @@ Enroll a remote node from Windows:
 Then send to a named remote agent with the same command shape:
 
 ```powershell
-.\codex-send.cmd frontend-agent "Reply with your node name and cwd."
+.\cam.cmd send frontend-agent "Reply with your node name and cwd."
 ```
 
 The local CLI first tries the local daemon. If the target agent is unknown locally, it checks enrolled SSH peers and runs that peer's local `cam send` command over SSH. This works from the home PC behind NAT because the home PC initiates outbound SSH.
@@ -124,7 +135,7 @@ That opens:
 127.0.0.1:37632 -> frontend:127.0.0.1:37631
 ```
 
-The tunnel is optional for normal `codex-send` SSH peer routing. It is useful for diagnostics and future HTTP manager-to-manager transport, while still avoiding public manager ports.
+The tunnel is optional for normal `cam send` SSH peer routing. It is useful for diagnostics and future HTTP manager-to-manager transport, while still avoiding public manager ports.
 
 ## Storage
 

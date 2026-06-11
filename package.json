@@ -5,14 +5,13 @@
   "description": "Local Codex app-server-backed agent registry and message bus.",
   "type": "module",
   "bin": {
-    "cam": "./bin/cam.js",
-    "codex-send": "./bin/codex-send.js"
+    "cam": "./bin/cam.js"
   },
   "scripts": {
     "doctor": "node ./bin/cam.js doctor",
     "daemon": "node ./bin/cam.js daemon start",
     "test:smoke": "node ./scripts/smoke-local.js",
-    "build": "pkg ./bin/cam.js -t node18-win-x64 -o dist/cam.exe && pkg ./bin/codex-send.js -t node18-win-x64 -o dist/codex-send.exe"
+    "build": "pkg . -t node18-win-x64 --out-path dist"
   },
   "engines": {
     "node": ">=18"

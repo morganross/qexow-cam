@@ -35,4 +35,3 @@ jobs:
         files: |
           dist/CodexAgentManagerSetup.exe
           dist/cam.exe
-          dist/codex-send.exe

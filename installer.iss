@@ -13,7 +13,6 @@ SetupIconFile=compiler:SetupClassicIcon.ico
 
 [Files]
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\codex-send.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Uninstall Codex Agent Manager"; Filename: "{uninstallexe}"
