@@ -69,6 +69,10 @@ if (fs.existsSync(cscPath)) {
   console.warn("[BUILD] WARNING: csc.exe not found, skipping cam-tray.exe compilation.");
 }
 
+// Copy query_threads.py to dist
+fs.copyFileSync(path.join(ROOT, "src", "query_threads.py"), path.join(DIST, "query_threads.py"));
+
 console.log("\n[BUILD] ✅ Build complete! Outputs:");
 console.log(`  dist/cam.exe`);
 console.log(`  dist/cam-tray.exe`);
+console.log(`  dist/query_threads.py`);

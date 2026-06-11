@@ -267,13 +267,16 @@ async function commandDaemon(args) {
   if (action === "start") {
     initConfig();
     const node = process.env.CAM_NODE_EXE || process.execPath;
-    const daemonScript = path.resolve(path.dirname(process.execPath), "daemon-entry.js");
+    const isSea = !node.endsWith("node") && !node.endsWith("node.exe");
+    const daemonScript = path.resolve(typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url)), "daemon-entry.js");
+    const spawnArgs = isSea ? ["daemon-run"] : [daemonScript];
     const out = fs.openSync(paths().daemonLog, "a");
-    const child = spawn(node, [daemonScript], {
+    const child = spawn(node, spawnArgs, {
       detached: true,
       stdio: ["ignore", out, out],
       windowsHide: true,
       env: process.env,
+      shell: true,
     });
     child.unref();
     console.log(`started daemon pid=${child.pid}`);
@@ -622,19 +625,133 @@ function stopPid(pid) {
   }
 }
 
-function listPeerAgents(peer) {
-  const command = `node ${shellQuote(`${peer.remoteRoot}/bin/cam.js`)} agent list`;
-  const result = spawnSync("ssh", sshArgs(peer, command), { encoding: "utf8", timeout: 30000 });
+function runSshSync(peer, commandArgs, stdinContent = null, timeoutMs = 30000) {
+  const args = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"];
+  if (peer.key) args.push("-i", peer.key);
+  args.push(peer.ssh, ...commandArgs);
+
+  const result = spawnSync("ssh", args, {
+    input: stdinContent || undefined,
+    encoding: "utf8",
+    timeout: timeoutMs
+  });
+
   if (result.status !== 0) {
-    return { ok: false, agents: [], error: (result.stderr || result.stdout).trim() };
+    return { ok: false, stdout: result.stdout, stderr: result.stderr || "ssh exit code " + result.status };
   }
-  const agents = result.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => line.split(/\t/)[0])
-    .filter(Boolean);
+  return { ok: true, stdout: result.stdout, stderr: result.stderr };
+}
+
+function listPeerAgents(peer) {
+  const sq = (val) => "'" + String(val).replace(/'/g, "'\\''") + "'";
+  let agents = [];
+  let successStrategy = null;
+
+  // Stage 1: CLI list
+  if (!successStrategy) {
+    const command = `node ${sq(`${peer.remoteRoot}/bin/cam.js`)} agent list`;
+    const result = runSshSync(peer, [command]);
+    if (result.ok) {
+      try {
+        const lines = result.stdout.split(/\r?\n/).filter(Boolean);
+        const list = [];
+        for (const line of lines) {
+          const fields = line.split("\t");
+          if (fields.length >= 1 && fields[0]) {
+            list.push(fields[0]);
+          }
+        }
+        if (list.length > 0) {
+          agents = list;
+          successStrategy = "cli";
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Stage 2: Registry JSON file read
+  if (!successStrategy) {
+    const command = `cat ~/.codex-agent-manager/agents.json`;
+    const result = runSshSync(peer, [command]);
+    if (result.ok) {
+      try {
+        const registry = JSON.parse(result.stdout);
+        if (registry && registry.agents) {
+          agents = Object.keys(registry.agents);
+          successStrategy = "registry";
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Load scripts
+  const srcDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+  const pyRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.py"), "utf8");
+  const jsRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.js"), "utf8");
+
+  // Stage 3: Python direct query
+  if (!successStrategy) {
+    const result = runSshSync(peer, ["python3"], pyRemoteScript);
+    if (result.ok) {
+      try {
+        const data = JSON.parse(result.stdout);
+        if (data.threads) {
+          const normalizeName = (text) => {
+            if (!text) return "";
+            return text
+              .toLowerCase()
+              .replace(/[^a-z0-9\s-]/g, "")
+              .trim()
+              .replace(/[\s_]+/g, "-")
+              .replace(/-+/g, "-")
+              .replace(/^-+|-+$/g, "");
+          };
+          agents = data.threads.map(t => {
+            let name = normalizeName(t.title);
+            if (!name) name = `agent-${t.id.substring(0, 8)}`;
+            return name;
+          });
+          successStrategy = "python";
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Stage 4: Node.js direct query
+  if (!successStrategy) {
+    const result = runSshSync(peer, ["node -e " + sq("eval(require('fs').readFileSync(0, 'utf-8'))")], jsRemoteScript);
+    if (result.ok) {
+      try {
+        const data = JSON.parse(result.stdout);
+        if (data.threads) {
+          const normalizeName = (text) => {
+            if (!text) return "";
+            return text
+              .toLowerCase()
+              .replace(/[^a-z0-9\s-]/g, "")
+              .trim()
+              .replace(/[\s_]+/g, "-")
+              .replace(/-+/g, "-")
+              .replace(/^-+|-+$/g, "");
+          };
+          agents = data.threads.map(t => {
+            let name = normalizeName(t.title);
+            if (!name) name = `agent-${t.id.substring(0, 8)}`;
+            return name;
+          });
+          successStrategy = "node";
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (!successStrategy) {
+    return { ok: false, agents: [], error: "failed to list agents using all discovery strategies" };
+  }
+
   return { ok: true, agents };
 }
+
 
 function sendViaPeer(payload) {
   const registry = readJson(paths().registry, { peers: {} });
@@ -830,6 +947,10 @@ export async function main(args) {
   }
   if (cmd === "doctor") return commandDoctor();
   if (cmd === "daemon") return commandDaemon(rest);
+  if (cmd === "daemon-run") {
+    const { runDaemon } = await import("./daemon.js");
+    return runDaemon();
+  }
   if (cmd === "agent") return commandAgent(rest);
   if (cmd === "send") return commandSend(rest);
   if (cmd === "tunnel") return commandTunnel(rest);
