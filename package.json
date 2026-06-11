@@ -1,0 +1,19 @@
+{
+  "name": "codex-agent-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Codex app-server-backed agent registry and message bus.",
+  "type": "module",
+  "bin": {
+    "cam": "./bin/cam.js",
+    "codex-send": "./bin/codex-send.js"
+  },
+  "scripts": {
+    "doctor": "node ./bin/cam.js doctor",
+    "daemon": "node ./bin/cam.js daemon start",
+    "test:smoke": "node ./scripts/smoke-local.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

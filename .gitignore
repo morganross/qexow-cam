@@ -1,0 +1,17 @@
+node_modules/
+.cam/
+data/
+logs/
+secrets/
+*.log
+*.pid
+*.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.token
+*.key
+*.pem
+local-*.json
+generated/
+*.BAK-*
