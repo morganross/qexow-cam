@@ -225,26 +225,6 @@ async function commandDoctor() {
     row(false, "CAM daemon running", `${error.message} — run: cam daemon start`);
   }
 
-  // ── ANTIGRAVITY ─────────────────────────────────────────────────────────────
-  header("ANTIGRAVITY");
-  const agyAppDir    = path.join(localAppData, "Programs", "Antigravity");
-  const agyAppExe    = path.join(agyAppDir, "Antigravity.exe");
-  const agyLangSrv   = path.join(agyAppDir, "resources", "bin", "language_server.exe");
-
-  row(fs.existsSync(agyAppDir),  "Antigravity Desktop App installed", agyAppDir);
-  row(fs.existsSync(agyAppExe),  "Antigravity Desktop App exe",       agyAppExe);
-  row(fs.existsSync(agyLangSrv), "Antigravity Language Server (agy)", agyLangSrv);
-
-  const agyVer = await tryCommand("agy", ["--version"], 5000);
-  row(agyVer.ok, "agy CLI in PATH", agyVer.ok ? agyVer.output : "NOT found — install Antigravity Desktop App");
-
-  const agyStatus = await tryCommand("agy", ["status"], 8000);
-  const agyLoggedIn = agyStatus.ok && !agyStatus.output.toLowerCase().includes("unauthenticated")
-                                   && !agyStatus.output.toLowerCase().includes("login required")
-                                   && !agyStatus.output.toLowerCase().includes("not logged");
-  row(agyLoggedIn, "Antigravity auth (agy status)",
-    agyStatus.ok ? (agyLoggedIn ? agyStatus.output.split("\n")[0] : "NOT logged in — run: agy login") : "agy CLI not available");
-
   // ── INSTALLATION ASSISTANCE ────────────────────────────────────────────────
   const missing = [];
   if (!hasAppDir && !isUwpInstalled) {
@@ -269,25 +249,6 @@ async function commandDoctor() {
     missing.push({
       name: "Codex Authentication",
       command: "codex login"
-    });
-  }
-  const hasAgyApp = fs.existsSync(agyAppDir);
-  if (!hasAgyApp) {
-    missing.push({
-      name: "Antigravity Desktop App",
-      command: "Download from https://antigravity.google/download"
-    });
-  }
-  if (!agyVer.ok) {
-    missing.push({
-      name: "Antigravity CLI (agy)",
-      command: "powershell -Command \"irm https://antigravity.google/cli/install.ps1 | iex\""
-    });
-  }
-  if (!agyLoggedIn && agyVer.ok) {
-    missing.push({
-      name: "Antigravity Authentication",
-      command: "agy login"
     });
   }
 
