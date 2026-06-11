@@ -1,6 +1,6 @@
 [Setup]
 AppName=Codex Agent Manager
-AppVersion=1.6.0
+AppVersion=1.6.1
 DefaultDirName={pf}\Codex Agent Manager
 DefaultGroupName=Codex Agent Manager
 OutputDir=dist
@@ -10,6 +10,8 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 ChangesEnvironment=yes
 SetupIconFile=compiler:SetupClassicIcon.ico
+CloseApplications=no
+
 
 [Files]
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion
