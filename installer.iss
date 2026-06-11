@@ -14,6 +14,7 @@ SetupIconFile=compiler:SetupClassicIcon.ico
 [Files]
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\cam-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\daemon-entry.js"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Codex Agent Manager"; Filename: "{app}\cam-tray.exe"

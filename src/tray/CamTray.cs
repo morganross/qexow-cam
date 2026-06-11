@@ -45,8 +45,46 @@ namespace CamTray
 
         private void Status_Click(object sender, EventArgs e)
         {
-            string output = RunCamCommand("daemon status");
-            MessageBox.Show(output, "CAM Daemon Status", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            string output = RunCamCommand("doctor");
+
+            Form statusForm = new Form();
+            statusForm.Text = "CAM System Status";
+            statusForm.Size = new System.Drawing.Size(760, 520);
+            statusForm.MinimumSize = new System.Drawing.Size(500, 300);
+            statusForm.StartPosition = FormStartPosition.CenterScreen;
+            statusForm.BackColor = System.Drawing.Color.FromArgb(15, 15, 25);
+            statusForm.ForeColor = System.Drawing.Color.White;
+
+            RichTextBox rtb = new RichTextBox();
+            rtb.Dock = DockStyle.Fill;
+            rtb.ReadOnly = true;
+            rtb.Font = new System.Drawing.Font("Consolas", 10f);
+            rtb.BackColor = System.Drawing.Color.FromArgb(15, 15, 25);
+            rtb.ForeColor = System.Drawing.Color.White;
+            rtb.BorderStyle = BorderStyle.None;
+            rtb.ScrollBars = RichTextBoxScrollBars.Vertical;
+
+            string raw = string.IsNullOrWhiteSpace(output) ? "No output from cam doctor." : output;
+            string[] outputLines = raw.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            foreach (string outputLine in outputLines)
+            {
+                int start = rtb.TextLength;
+                rtb.AppendText(outputLine + "\n");
+                rtb.Select(start, outputLine.Length);
+                if (outputLine.StartsWith("OK "))
+                    rtb.SelectionColor = System.Drawing.Color.LimeGreen;
+                else if (outputLine.StartsWith("BAD"))
+                    rtb.SelectionColor = System.Drawing.Color.OrangeRed;
+                else if (outputLine.StartsWith("[") && outputLine.EndsWith("]"))
+                    rtb.SelectionColor = System.Drawing.Color.CornflowerBlue;
+                else
+                    rtb.SelectionColor = System.Drawing.Color.Silver;
+            }
+            rtb.SelectionStart = 0;
+            rtb.SelectionLength = 0;
+
+            statusForm.Controls.Add(rtb);
+            statusForm.ShowDialog();
         }
 
         private void Start_Click(object sender, EventArgs e)

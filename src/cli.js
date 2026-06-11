@@ -82,33 +82,154 @@ function normalizeServiceTier(opts) {
   return { provided: true, value: tier };
 }
 
+// Helper: run a command with a timeout, return { ok, output }
+function tryCommand(cmd, args, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { windowsHide: true, shell: false });
+    } catch (e) {
+      return resolve({ ok: false, output: e.message });
+    }
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (_) {}
+      resolve({ ok: false, output: "timed out" });
+    }, timeoutMs);
+    child.stdout?.on("data", (d) => { out += d; });
+    child.stderr?.on("data", (d) => { err += d; });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, output: e.message }); });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, output: (out || err).trim() });
+    });
+  });
+}
+
+// Helper: probe codex app-server over stdio
+function checkCodexAppServer(codexPath) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(codexPath, ["app-server", "--listen", "stdio://"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (e) {
+      return resolve({ ok: false, detail: e.message });
+    }
+    let buffer = "";
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (_) {}
+      resolve({ ok: false, detail: "timed out waiting for app-server response" });
+    }, 12000);
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      const idx = buffer.indexOf("\n");
+      if (idx < 0) return;
+      clearTimeout(timer);
+      try { child.kill(); } catch (_) {}
+      try {
+        const msg = JSON.parse(buffer.slice(0, idx).trim());
+        if (msg.result) {
+          const info = msg.result.serverInfo ? `${msg.result.serverInfo.name} ${msg.result.serverInfo.version || ""}`.trim() : "OK";
+          resolve({ ok: true, detail: info });
+        } else if (msg.error) {
+          resolve({ ok: false, detail: `protocol error: ${msg.error.message}` });
+        } else {
+          resolve({ ok: true, detail: "responds OK" });
+        }
+      } catch (_) {
+        resolve({ ok: true, detail: "responds (non-JSON)" });
+      }
+    });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, detail: e.message }); });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code !== null) resolve({ ok: false, detail: `exited with code ${code} before responding` });
+    });
+    try {
+      child.stdin.write(JSON.stringify({
+        id: 1, method: "initialize",
+        params: { clientInfo: { name: "cam-doctor", version: "0.1.0" }, capabilities: { experimentalApi: true } },
+      }) + "\n");
+    } catch (e) {
+      clearTimeout(timer);
+      try { child.kill(); } catch (_) {}
+      resolve({ ok: false, detail: `stdin write failed: ${e.message}` });
+    }
+  });
+}
+
 async function commandDoctor() {
   const config = loadConfig();
   const p = allPaths();
   const codexPath = config.codexPath || defaultCodexPath();
-  const checks = [];
-  checks.push(["CAM home", p.root, fs.existsSync(p.root)]);
-  checks.push(["Local API token", p.localToken, fs.existsSync(p.localToken)]);
-  checks.push(["Codex binary", codexPath, codexPath === "codex" || fs.existsSync(codexPath)]);
-  checks.push(["Registry", p.registry, fs.existsSync(p.registry)]);
-  for (const [name, value, ok] of checks) console.log(`${ok ? "OK " : "BAD"} ${name}: ${value}`);
-  await new Promise((resolve) => {
-    const child = spawn(codexPath, ["--version"], { windowsHide: true });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (d) => { out += d; });
-    child.stderr.on("data", (d) => { err += d; });
-    child.on("exit", (code) => {
-      console.log(`${code === 0 ? "OK " : "BAD"} codex --version: ${(out || err).trim() || `exit ${code}`}`);
-      resolve();
-    });
-  });
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+
+  function row(ok, label, detail) {
+    const msg = `${ok ? "OK " : "BAD"} ${label}${detail ? `: ${detail}` : ""}`;
+    console.log(msg);
+  }
+  function header(title) {
+    console.log(`\n[${title}]`);
+  }
+
+  // ── CODEX ECOSYSTEM ─────────────────────────────────────────────────────────
+  header("CODEX ECOSYSTEM");
+  const codexAppDir  = path.join(localAppData, "OpenAI", "Codex");
+  const codexAppExe  = path.join(codexAppDir, "Codex.exe");
+  const codexBinExe  = path.join(codexAppDir, "bin", "codex.exe");
+
+  row(fs.existsSync(codexAppDir),  "Codex Desktop App installed", codexAppDir);
+  row(fs.existsSync(codexAppExe),  "Codex Desktop App exe",       codexAppExe);
+  row(fs.existsSync(codexBinExe) || codexPath === "codex",
+                                   "codex.exe CLI binary",         codexPath);
+
+  const ver = await tryCommand(codexPath, ["--version"]);
+  row(ver.ok, "codex --version", ver.output || "not found");
+
+  const whoami = await tryCommand(codexPath, ["whoami"], 10000);
+  row(whoami.ok, "Codex auth (whoami)", whoami.ok ? (whoami.output || "logged in") : "NOT logged in — run: codex login");
+
+  const appSrv = await checkCodexAppServer(codexPath);
+  row(appSrv.ok, "Codex App Server (stdio probe)", appSrv.detail);
+
+  // ── CAM DAEMON ──────────────────────────────────────────────────────────────
+  header("CAM DAEMON");
+  row(fs.existsSync(p.root),       "CAM home dir",        p.root);
+  row(fs.existsSync(p.localToken), "CAM API token",       p.localToken);
+  row(fs.existsSync(p.registry),   "CAM agent registry",  p.registry);
+
   try {
     const health = await apiRequest("GET", "/health");
-    console.log(`OK  daemon: ${health.nodeName} ${health.startedAt}`);
+    row(true, "CAM daemon running", `port ${config.port || DEFAULT_PORT}, node=${health.nodeName}, started=${health.startedAt}`);
   } catch (error) {
-    console.log(`BAD daemon: ${error.message}`);
+    row(false, "CAM daemon running", `${error.message} — run: cam daemon start`);
   }
+
+  // ── ANTIGRAVITY ─────────────────────────────────────────────────────────────
+  header("ANTIGRAVITY");
+  const agyAppDir    = path.join(localAppData, "Programs", "Antigravity");
+  const agyAppExe    = path.join(agyAppDir, "Antigravity.exe");
+  const agyLangSrv   = path.join(agyAppDir, "resources", "bin", "language_server.exe");
+
+  row(fs.existsSync(agyAppDir),  "Antigravity Desktop App installed", agyAppDir);
+  row(fs.existsSync(agyAppExe),  "Antigravity Desktop App exe",       agyAppExe);
+  row(fs.existsSync(agyLangSrv), "Antigravity Language Server (agy)", agyLangSrv);
+
+  const agyVer = await tryCommand("agy", ["--version"], 5000);
+  row(agyVer.ok, "agy CLI in PATH", agyVer.ok ? agyVer.output : "NOT found — install Antigravity Desktop App");
+
+  const agyStatus = await tryCommand("agy", ["status"], 8000);
+  const agyLoggedIn = agyStatus.ok && !agyStatus.output.toLowerCase().includes("unauthenticated")
+                                   && !agyStatus.output.toLowerCase().includes("login required")
+                                   && !agyStatus.output.toLowerCase().includes("not logged");
+  row(agyLoggedIn, "Antigravity auth (agy status)",
+    agyStatus.ok ? (agyLoggedIn ? agyStatus.output.split("\n")[0] : "NOT logged in — run: agy login") : "agy CLI not available");
 }
 
 async function commandDaemon(args) {
@@ -116,7 +237,7 @@ async function commandDaemon(args) {
   if (action === "start") {
     initConfig();
     const node = process.env.CAM_NODE_EXE || process.execPath;
-    const daemonScript = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "daemon-entry.js");
+    const daemonScript = path.resolve(path.dirname(process.execPath), "daemon-entry.js");
     const out = fs.openSync(paths().daemonLog, "a");
     const child = spawn(node, [daemonScript], {
       detached: true,
@@ -520,7 +641,7 @@ async function commandService(cmd, args) {
 }
 
 function daemonScriptPath() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "daemon-entry.js");
+  return path.resolve(path.dirname(process.execPath), "daemon-entry.js");
 }
 
 function daemonNodePath() {
