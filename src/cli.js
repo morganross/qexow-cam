@@ -9,6 +9,7 @@ import { apiRequest } from "./api.js";
 import { allPaths, defaultCodexPath, initConfig, loadConfig } from "./config.js";
 import { readMailbox, listAgents } from "./registry.js";
 import { paths, projectRoot, readJson, writeJsonAtomic } from "./paths.js";
+import { logEvent } from "./logger.js";
 
 function usage() {
   return `Usage:
@@ -276,6 +277,7 @@ async function commandDoctor() {
 async function commandDaemon(args) {
   const action = args[0];
   if (action === "start") {
+    logEvent("cli.daemon.start.initiating");
     initConfig();
     const node = process.env.CAM_NODE_EXE || process.execPath;
     const isSea = !node.endsWith("node") && !node.endsWith("node.exe");
@@ -290,11 +292,14 @@ async function commandDaemon(args) {
       shell: false,
     });
     child.unref();
+    logEvent("cli.daemon.start.complete", { pid: child.pid });
     console.log(`started daemon pid=${child.pid}`);
     return;
   }
   if (action === "stop") {
+    logEvent("cli.daemon.stop.initiating");
     await apiRequest("POST", "/shutdown", {});
+    logEvent("cli.daemon.stop.complete");
     console.log("stopped daemon");
     return;
   }
@@ -308,6 +313,7 @@ async function commandDaemon(args) {
 
 async function commandTunnel(args) {
   const action = args[0];
+  logEvent("cli.tunnel.action", { action, args });
   if (action === "command" || action === "open") {
     const opts = parseOptions(args.slice(1));
     const peerName = opts._[0];
@@ -332,6 +338,7 @@ async function commandTunnel(args) {
       });
       child.unref();
       recordTunnel({ pid: child.pid, peer: peerName, localPort, remotePort, startedAt: new Date().toISOString() });
+      logEvent("cli.tunnel.open.background", { pid: child.pid, peer: peerName, localPort, remotePort });
       console.log(`started tunnel pid=${child.pid} 127.0.0.1:${localPort} -> ${peerName}:127.0.0.1:${remotePort}`);
       return;
     }
@@ -356,7 +363,9 @@ async function commandTunnel(args) {
   if (action === "stop") {
     const pid = Number(args[1]);
     if (!pid) throw new Error("usage: cam tunnel stop <pid>");
+    logEvent("cli.tunnel.stop.initiating", { pid });
     stopPid(pid);
+    logEvent("cli.tunnel.stop.complete", { pid });
     console.log(`stopped tunnel pid=${pid}`);
     return;
   }
@@ -525,7 +534,22 @@ async function commandSend(args) {
 }
 
 async function commandInbox(args) {
-  const agent = args[0];
+  const opts = parseOptions(args);
+  const agent = opts._[0];
+  const wait = opts.wait;
+
+  if (wait !== undefined) {
+    let url = `/inbox?agent=${encodeURIComponent(agent || "")}`;
+    if (wait && wait !== true) url += `&wait=${wait}`;
+    try {
+      const result = await apiRequest("GET", url);
+      console.log(JSON.stringify(result.messages || result, null, 2));
+      return;
+    } catch (err) {
+      // Fallback if daemon is not reachable
+    }
+  }
+
   const messages = agent ? readMailbox(agent) : readMailbox();
   console.log(JSON.stringify(messages, null, 2));
 }
@@ -796,6 +820,7 @@ function sendViaPeer(payload) {
 }
 
 async function commandService(cmd, args) {
+  logEvent("cli.service.action", { command: cmd, args });
   initConfig();
   const opts = parseOptions(args);
   const name = opts.name || "QexowCam";
@@ -829,7 +854,7 @@ function installWindowsTask(name) {
     "LIMITED",
     "/TR",
     taskCommand,
-  ], { encoding: "utf8" });
+  ], { encoding: "utf8", windowsHide: true });
   if (create.status !== 0) {
     installWindowsStartupFallback(name);
     console.log(`installed Startup folder fallback because scheduled task creation failed: ${(create.stderr || create.stdout).trim()}`);
@@ -840,7 +865,7 @@ function installWindowsTask(name) {
 }
 
 function uninstallWindowsTask(name) {
-  const result = spawnSync("schtasks.exe", ["/Delete", "/TN", name, "/F"], { encoding: "utf8" });
+  const result = spawnSync("schtasks.exe", ["/Delete", "/TN", name, "/F"], { encoding: "utf8", windowsHide: true });
   uninstallWindowsStartupFallback(name);
   if (result.status === 0) console.log((result.stdout || "").trim());
   else console.log(`scheduled task was not removed or did not exist: ${(result.stderr || result.stdout).trim()}`);

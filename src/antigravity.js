@@ -22,14 +22,14 @@ export function bootstrapAntigravity(logFunc) {
 
   // 1. Verify Antigravity CLI (agy)
   try {
-    execSync('agy --version', { stdio: 'ignore' });
+    execFileSync('agy', ['--version'], { stdio: 'ignore', windowsHide: true });
   } catch (e) {
     logFunc("bootstrap.antigravity.error", { message: "Antigravity CLI ('agy') not found in PATH." });
   }
 
   // 2. Verify Antigravity Auth
   try {
-    const agyStatus = execSync('agy status', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const agyStatus = execFileSync('agy', ['status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     if (agyStatus.toLowerCase().includes('unauthenticated') || agyStatus.toLowerCase().includes('login required')) {
       throw new Error("Needs login");
     }
@@ -39,14 +39,14 @@ export function bootstrapAntigravity(logFunc) {
 
   // 3. Verify Codex CLI
   try {
-    execSync('codex --version', { stdio: 'ignore' });
+    execFileSync('codex', ['--version'], { stdio: 'ignore', windowsHide: true });
   } catch (e) {
     logFunc("bootstrap.antigravity.error", { message: "Codex CLI ('codex') not found in PATH." });
   }
 
   // 4. Verify Codex Auth
   try {
-    execSync('codex whoami', { stdio: 'ignore' });
+    execFileSync('codex', ['whoami'], { stdio: 'ignore', windowsHide: true });
   } catch (e) {
     logFunc("bootstrap.antigravity.warn", { message: "Codex OAuth missing or expired. Run 'codex login'." });
   }
@@ -61,50 +61,16 @@ export function bootstrapAntigravity(logFunc) {
 function installAntigravitySkills(logFunc) {
   const skillsDir = path.join(os.homedir(), ".gemini", "antigravity", "skills");
   const camSkillDir = path.join(skillsDir, "qexow-cam-messaging");
+  const camExe = process.env.CAM_NODE_EXE || process.execPath;
   
   if (!fs.existsSync(camSkillDir)) {
     fs.mkdirSync(camSkillDir, { recursive: true });
   }
 
-  const defaultPs1 = `
-param (
-    [string]$TargetAgent,
-    [string]$MessageText
-)
-
-$tokenFile = "$env:USERPROFILE\\.qexow-cam\\secrets\\local-api-token"
-$configFile = "$env:USERPROFILE\\.qexow-cam\\config.json"
-
-if (-not (Test-Path $tokenFile)) {
-    Throw "CAM token file not found at $tokenFile. Fallbacks are disabled."
-}
-if (-not (Test-Path $configFile)) {
-    Throw "CAM config file not found at $configFile. Fallbacks are disabled."
-}
-
-$token = (Get-Content $tokenFile -Raw).Trim()
-$config = Get-Content $configFile -Raw | ConvertFrom-Json
-if (-not $config.port) {
-    Throw "CAM port configuration is missing in $configFile. Fallbacks are disabled."
-}
-$port = $config.port
-
-$body = @{
-    targetAgent = $TargetAgent
-    message = $MessageText
-    sourceAgent = "antigravity"
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/send" -Method Post -Headers @{ Authorization = "Bearer $token" } -Body $body -ContentType "application/json"
-$response | ConvertTo-Json -Depth 5
-`;
-  const destPs1 = path.join(camSkillDir, "Send-AgentMessage.ps1");
-  fs.writeFileSync(destPs1, defaultPs1.trim(), "utf8");
-
   const skillDef = {
     name: "cam_send_message",
     description: `Send a message to another agent via the Qexow CAM (CAM) protocol. Use this to respond to incoming requests from other agents. Boss Agents: If you are a Boss agent, please read the rules of engagement at: ${path.join(os.homedir(), ".qexow-cam", "boss.md")}`,
-    entrypoint: "pwsh.exe -File .\\Send-AgentMessage.ps1 -TargetAgent \"{{TargetAgent}}\" -MessageText \"{{MessageText}}\"",
+    entrypoint: `"${camExe}" send "{{TargetAgent}}" "{{MessageText}}" --from antigravity`,
     parameters: {
       type: "object",
       properties: {
@@ -124,43 +90,10 @@ $response | ConvertTo-Json -Depth 5
     fs.mkdirSync(inboxSkillDir, { recursive: true });
   }
 
-  const inboxPs1 = `
-param (
-    [int]$WaitSeconds = 20
-)
-
-$tokenFile = "$env:USERPROFILE\\.qexow-cam\\secrets\\local-api-token"
-$configFile = "$env:USERPROFILE\\.qexow-cam\\config.json"
-
-if (-not (Test-Path $tokenFile)) {
-    Throw "CAM token file not found at $tokenFile. Fallbacks are disabled."
-}
-if (-not (Test-Path $configFile)) {
-    Throw "CAM config file not found at $configFile. Fallbacks are disabled."
-}
-
-$token = (Get-Content $tokenFile -Raw).Trim()
-$config = Get-Content $configFile -Raw | ConvertFrom-Json
-if (-not $config.port) {
-    Throw "CAM port configuration is missing in $configFile. Fallbacks are disabled."
-}
-$port = $config.port
-
-$uri = "http://127.0.0.1:$port/inbox?agent=antigravity"
-if ($WaitSeconds -gt 0) {
-    $uri += "&wait=$WaitSeconds"
-}
-
-$response = Invoke-RestMethod -Uri $uri -Method Get -Headers @{ Authorization = "Bearer $token" }
-$response | ConvertTo-Json -Depth 5
-`;
-  
-  fs.writeFileSync(path.join(inboxSkillDir, "Check-AgentMessages.ps1"), inboxPs1.trim(), "utf8");
-
   const inboxSkillDef = {
     name: "cam_check_inbox",
     description: "Check your Qexow CAM inbox for any pending messages from other agents. Set WaitSeconds to block and wait for a response if none are currently available.",
-    entrypoint: "pwsh.exe -File .\\Check-AgentMessages.ps1 -WaitSeconds {{WaitSeconds}}",
+    entrypoint: `"${camExe}" inbox antigravity --wait {{WaitSeconds}}`,
     parameters: {
       type: "object",
       properties: {
@@ -179,47 +112,10 @@ $response | ConvertTo-Json -Depth 5
     fs.mkdirSync(eavesdropSkillDir, { recursive: true });
   }
 
-  const eavesdropPs1 = `
-param (
-    [string]$TargetAgent,
-    [int]$Turns = 5
-)
-
-$tokenFile = "$env:USERPROFILE\\.qexow-cam\\secrets\\local-api-token"
-$configFile = "$env:USERPROFILE\\.qexow-cam\\config.json"
-
-if (-not (Test-Path $tokenFile)) {
-    Throw "CAM token file not found at $tokenFile. Fallbacks are disabled."
-}
-if (-not (Test-Path $configFile)) {
-    Throw "CAM config file not found at $configFile. Fallbacks are disabled."
-}
-
-$token = (Get-Content $tokenFile -Raw).Trim()
-$config = Get-Content $configFile -Raw | ConvertFrom-Json
-$port = $config.port
-
-$encodedName = [System.Uri]::EscapeDataString($TargetAgent)
-$uri = "http://127.0.0.1:$port/agents/read?name=$encodedName&includeTurns=true&turns=$Turns"
-
-$response = Invoke-RestMethod -Uri $uri -Method Get -Headers @{ Authorization = "Bearer $token" }
-
-if ($response.thread.turns) {
-    foreach ($turn in $response.thread.turns) {
-        Write-Host $turn.content
-        Write-Host "========================================"
-    }
-} else {
-    Write-Host "No history found for agent $TargetAgent."
-}
-`;
-  
-  fs.writeFileSync(path.join(eavesdropSkillDir, "Eavesdrop-Agent.ps1"), eavesdropPs1.trim(), "utf8");
-
   const eavesdropSkillDef = {
     name: "cam_eavesdrop",
     description: "Look back over the shoulder of another agent and retrieve their most recent execution history. This will show you exactly what they thought, the tools they executed, and the tool outputs. Use this to review their progress.",
-    entrypoint: "pwsh.exe -File .\\Eavesdrop-Agent.ps1 -TargetAgent \"{{TargetAgent}}\" -Turns {{Turns}}",
+    entrypoint: `"${camExe}" agent read "{{TargetAgent}}" --turns {{Turns}}`,
     parameters: {
       type: "object",
       properties: {
@@ -237,10 +133,9 @@ if ($response.thread.turns) {
 function installCodexSkills(logFunc) {
   const skillsDir = path.join(os.homedir(), ".codex", "skills");
   const camSkillDir = path.join(skillsDir, "qexow-cam-messaging");
-  const scriptsDir = path.join(camSkillDir, "scripts");
 
-  if (!fs.existsSync(scriptsDir)) {
-    fs.mkdirSync(scriptsDir, { recursive: true });
+  if (!fs.existsSync(camSkillDir)) {
+    fs.mkdirSync(camSkillDir, { recursive: true });
   }
 
   const camDir = path.join(os.homedir(), ".qexow-cam");
@@ -257,104 +152,36 @@ description: Send and receive messages to/from other agents using the Qexow CAM 
 ---
 # Instructions
 
-You are connected to the Qexow CAM messaging fabric. You can communicate with other agents (including \`antigravity\`) by running local scripts.
+You are connected to the Qexow CAM messaging fabric. You can communicate with other agents (including \`antigravity\`) by running the local \`cam\` command.
 
 > **Boss Agents:** If you are a Boss agent, please read the rules of engagement at:
 > \`${destBossMd}\`
 
 ## Sending a Message
 To send a message to another agent:
-1. Run the PowerShell script \`./scripts/Send-AgentMessage.ps1\` with the following parameters:
-   - \`-TargetAgent\`: The name of the agent you want to message (e.g., \`antigravity\`).
-   - \`-MessageText\`: The body of your message.
-   - \`-SourceAgent\`: Your agent name (e.g., \`coder-bot\`).
+1. Run the \`cam send\` command with the following parameters:
+   - \`[agent-name]\`: The name of the agent you want to message (e.g., \`antigravity\`).
+   - \`[message]\`: The body of your message.
+   - \`--from\`: Your agent name (e.g., \`coder-bot\`).
 
 **Example CLI call:**
-\`\`\`powershell
-pwsh -File "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "antigravity" -MessageText "Hello" -SourceAgent "coder-bot"
+\`\`\`bash
+cam send "antigravity" "Hello" --from "coder-bot"
 \`\`\`
 
 ## Checking Your Inbox
 To check for incoming messages:
-1. Run the PowerShell script \`./scripts/Check-AgentMessages.ps1\` with the following parameters:
-   - \`-AgentName\`: Your agent name (e.g., \`coder-bot\`).
-   - \`-WaitSeconds\`: (Optional) The number of seconds to block and wait for a response if your inbox is currently empty (defaults to 20, up to 30).
+1. Run the \`cam inbox\` command with the following parameters:
+   - \`[agent-name]\`: Your agent name (e.g., \`coder-bot\`).
+   - \`--wait\`: (Optional) The number of seconds to block and wait for a response if your inbox is currently empty (defaults to 20, up to 30).
 
 **Example CLI call:**
-\`\`\`powershell
-pwsh -File "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Check-AgentMessages.ps1" -AgentName "coder-bot" -WaitSeconds 15
+\`\`\`bash
+cam inbox "coder-bot" --wait 15
 \`\`\`
 `;
 
-  const sendPs1 = `
-param (
-    [string]$TargetAgent,
-    [string]$MessageText,
-    [string]$SourceAgent
-)
-
-$tokenFile = "$env:USERPROFILE\\.qexow-cam\\secrets\\local-api-token"
-$configFile = "$env:USERPROFILE\\.qexow-cam\\config.json"
-
-if (-not (Test-Path $tokenFile)) {
-    Throw "CAM token file not found at $tokenFile. Fallbacks are disabled."
-}
-if (-not (Test-Path $configFile)) {
-    Throw "CAM config file not found at $configFile. Fallbacks are disabled."
-}
-
-$token = (Get-Content $tokenFile -Raw).Trim()
-$config = Get-Content $configFile -Raw | ConvertFrom-Json
-if (-not $config.port) {
-    Throw "CAM port configuration is missing in $configFile. Fallbacks are disabled."
-}
-$port = $config.port
-
-$body = @{
-    targetAgent = $TargetAgent
-    message = $MessageText
-    sourceAgent = $SourceAgent
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/send" -Method Post -Headers @{ Authorization = "Bearer $token" } -Body $body -ContentType "application/json"
-$response | ConvertTo-Json -Depth 5
-`;
-
-  const checkPs1 = `
-param (
-    [string]$AgentName,
-    [int]$WaitSeconds = 20
-)
-
-$tokenFile = "$env:USERPROFILE\\.qexow-cam\\secrets\\local-api-token"
-$configFile = "$env:USERPROFILE\\.qexow-cam\\config.json"
-
-if (-not (Test-Path $tokenFile)) {
-    Throw "CAM token file not found at $tokenFile. Fallbacks are disabled."
-}
-if (-not (Test-Path $configFile)) {
-    Throw "CAM config file not found at $configFile. Fallbacks are disabled."
-}
-
-$token = (Get-Content $tokenFile -Raw).Trim()
-$config = Get-Content $configFile -Raw | ConvertFrom-Json
-if (-not $config.port) {
-    Throw "CAM port configuration is missing in $configFile. Fallbacks are disabled."
-}
-$port = $config.port
-
-$uri = "http://127.0.0.1:$port/inbox?agent=$AgentName"
-if ($WaitSeconds -gt 0) {
-    $uri += "&wait=$WaitSeconds"
-}
-
-$response = Invoke-RestMethod -Uri $uri -Method Get -Headers @{ Authorization = "Bearer $token" }
-$response | ConvertTo-Json -Depth 5
-`;
-
   fs.writeFileSync(path.join(camSkillDir, "SKILL.md"), skillMd.trim(), "utf8");
-  fs.writeFileSync(path.join(scriptsDir, "Send-AgentMessage.ps1"), sendPs1.trim(), "utf8");
-  fs.writeFileSync(path.join(scriptsDir, "Check-AgentMessages.ps1"), checkPs1.trim(), "utf8");
   logFunc("bootstrap.antigravity.skill", { message: `Codex global CAM skills successfully installed/updated at ${camSkillDir}` });
 }
 

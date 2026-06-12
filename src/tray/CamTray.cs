@@ -193,8 +193,99 @@ namespace CamTray
         private System.Windows.Forms.Timer statusTimer;
         private bool lastDaemonState = false;
 
+        private static readonly object LogLock = new object();
+
+        private static void WriteLog(string type, string message)
+        {
+            try
+            {
+                string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".qexow-cam");
+                string logsDir = Path.Combine(root, "logs");
+                
+                lock (LogLock)
+                {
+                    Directory.CreateDirectory(logsDir);
+                    string logFile = Path.Combine(logsDir, "tray.log");
+
+                    if (File.Exists(logFile) && new FileInfo(logFile).Length > 1 * 1024 * 1024)
+                    {
+                        try
+                        {
+                            for (int i = 3; i >= 1; i--)
+                            {
+                                string oldFile = logFile + "." + i;
+                                string newFile = logFile + "." + (i + 1);
+                                if (File.Exists(oldFile))
+                                {
+                                    File.Copy(oldFile, newFile, true);
+                                    File.Delete(oldFile);
+                                }
+                            }
+                            File.Copy(logFile, logFile + ".1", true);
+                            File.Delete(logFile);
+                        }
+                        catch {}
+                    }
+
+                    string entry = string.Format("[{0}] [{1}] {2}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), type, message);
+                    File.AppendAllText(logFile, entry + Environment.NewLine);
+                }
+            }
+            catch {}
+        }
+
+        private static void EnforceRetention()
+        {
+            try
+            {
+                string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".qexow-cam");
+                string logsDir = Path.Combine(root, "logs");
+                if (!Directory.Exists(logsDir)) return;
+
+                string[] files = Directory.GetFiles(logsDir);
+                DateTime now = DateTime.Now;
+                double maxAgeDays = 14.0;
+
+                foreach (string file in files)
+                {
+                    string name = Path.GetFileName(file);
+                    if (name == "daemon.log" || name == "tray.log") continue;
+
+                    DateTime lastModified = File.GetLastWriteTime(file);
+                    if ((now - lastModified).TotalDays > maxAgeDays)
+                    {
+                        try { File.Delete(file); } catch {}
+                    }
+                }
+            }
+            catch {}
+        }
+
+        private System.Threading.SynchronizationContext uiContext;
+        private static System.Threading.EventWaitHandle wakeupEvent;
+        private static System.Threading.Thread wakeupThread;
+
         public TrayApplicationContext()
         {
+            EnforceRetention();
+            WriteLog("INFO", "Tray application started.");
+
+            bool createdNew;
+            wakeupEvent = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, "QexowCamWakeupEvent", out createdNew);
+            if (!createdNew)
+            {
+                WriteLog("INFO", "Another instance is already running. Signaling wakeup and exiting.");
+                wakeupEvent.Set();
+                Environment.Exit(0);
+                return;
+            }
+
+            uiContext = System.Threading.SynchronizationContext.Current ?? new System.Windows.Forms.WindowsFormsSynchronizationContext();
+            
+            wakeupThread = new System.Threading.Thread(ListenForWakeup);
+            wakeupThread.IsBackground = true;
+            wakeupThread.Start();
+
             InitializeContext();
             EnsureDaemonRunning();
             
@@ -208,6 +299,38 @@ namespace CamTray
 
             // Auto-launch the status window on startup (non-blocking)
             ShowStatusDialog();
+        }
+
+        private void ListenForWakeup()
+        {
+            while (true)
+            {
+                try
+                {
+                    if (wakeupEvent.WaitOne())
+                    {
+                        uiContext.Post(_ => {
+                            WriteLog("INFO", "Wakeup signal received. Showing/bringing status window to front.");
+                            if (statusForm != null && !statusForm.IsDisposed)
+                            {
+                                statusForm.WindowState = FormWindowState.Normal;
+                                statusForm.Show();
+                                statusForm.Activate();
+                                statusForm.Focus();
+                            }
+                            else
+                            {
+                                ShowStatusDialog();
+                            }
+                        }, null);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteLog("ERROR", "Error in wakeup listener thread: " + ex.Message);
+                    System.Threading.Thread.Sleep(2000);
+                }
+            }
         }
 
         private void InitializeContext()
@@ -330,6 +453,8 @@ namespace CamTray
             statusForm.BackColor = Color.FromArgb(20, 20, 30);
             statusForm.ForeColor = Color.White;
             statusForm.Font = new Font("Segoe UI", 9.5f);
+            statusForm.MinimizeBox = true;
+            statusForm.MaximizeBox = true;
 
             // Header Panel
             Panel headerPanel = new Panel();
@@ -673,7 +798,11 @@ namespace CamTray
             }
             else if (label.Contains("Antigravity auth"))
             {
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c agy login && pause")
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string agyExe = Path.Combine(localAppData, "Programs", "Antigravity", "resources", "bin", "language_server.exe");
+                if (!File.Exists(agyExe)) agyExe = "language_server.exe";
+
+                ProcessStartInfo psi = new ProcessStartInfo(agyExe, "login")
                 {
                     UseShellExecute = true,
                     WindowStyle = ProcessWindowStyle.Normal
@@ -722,7 +851,7 @@ namespace CamTray
             }
             else if (label.Contains("Codex CLI"))
             {
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c npm install -g @openai/codex-cli && pause")
+                ProcessStartInfo psi = new ProcessStartInfo("npm.cmd", "install -g @openai/codex-cli")
                 {
                     UseShellExecute = true,
                     WindowStyle = ProcessWindowStyle.Normal
@@ -731,12 +860,23 @@ namespace CamTray
             }
             else if (label.Contains("Codex auth"))
             {
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c codex login && pause")
+                ProcessStartInfo psi = new ProcessStartInfo("codex.cmd", "login")
                 {
                     UseShellExecute = true,
                     WindowStyle = ProcessWindowStyle.Normal
                 };
-                try { Process.Start(psi); } catch (Exception ex) { MessageBox.Show("Failed to launch login: " + ex.Message); }
+                try { Process.Start(psi); }
+                catch
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo("codex", "login") { UseShellExecute = true });
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("Failed to launch login: " + ex.Message);
+                    }
+                }
             }
         }
 
@@ -821,7 +961,7 @@ namespace CamTray
             try
             {
                 string camDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".qexow-cam");
-                string logFile = Path.Combine(camDir, "daemon.jsonl");
+                string logFile = Path.Combine(camDir, "logs", "daemon.log");
                 if (File.Exists(logFile))
                 {
                     using (var fs = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -954,6 +1094,7 @@ namespace CamTray
 
         private void RunStatusTest(string agentName, string conversationId, Button btnTest)
         {
+            WriteLog("INFO", "Running connection test for agent: " + agentName);
             Form testForm = new Form();
             testForm.Text = "Testing Agent Chat Connection: " + agentName;
             testForm.Size = new Size(650, 450);
@@ -1032,6 +1173,7 @@ namespace CamTray
                 txtResponse.Text = output;
                 if (success)
                 {
+                    WriteLog("INFO", string.Format("Agent connection test for '{0}' PASSED.", agentName));
                     lblStage2.ForeColor = Color.LimeGreen;
                     lblStage2.Text = "✔ Response received!";
                     lblResult.Text = "RESULT: PASS";
@@ -1039,6 +1181,7 @@ namespace CamTray
                 }
                 else
                 {
+                    WriteLog("WARNING", string.Format("Agent connection test for '{0}' FAILED. Output: {1}", agentName, output));
                     lblStage2.ForeColor = Color.Red;
                     lblStage2.Text = "✖ Test failed or timed out.";
                     lblResult.Text = "RESULT: FAIL";
@@ -1087,24 +1230,28 @@ namespace CamTray
 
         private void Start_Click(object sender, EventArgs e)
         {
+            WriteLog("INFO", "Start daemon clicked.");
             RunCamCommand("daemon start");
             RefreshStatusList();
         }
 
         private void Stop_Click(object sender, EventArgs e)
         {
+            WriteLog("INFO", "Stop daemon clicked.");
             RunCamCommand("daemon stop");
             RefreshStatusList();
         }
 
         private void Exit_Click(object sender, EventArgs e)
         {
+            WriteLog("INFO", "Exit clicked. Shutting down tray application.");
             trayIcon.Visible = false;
             Application.Exit();
         }
 
         private string RunCamCommand(string arguments)
         {
+            WriteLog("DEBUG", "Executing cam command: " + arguments);
             try
             {
                 string binDir = Program.GetBinDir();
@@ -1132,13 +1279,16 @@ namespace CamTray
                     
                     if (!string.IsNullOrWhiteSpace(error))
                     {
+                        WriteLog("ERROR", string.Format("Command '{0}' finished with error: {1}", arguments, error));
                         return output + "\n" + error;
                     }
+                    WriteLog("DEBUG", string.Format("Command '{0}' finished successfully.", arguments));
                     return string.IsNullOrWhiteSpace(output) ? "Command executed successfully." : output;
                 }
             }
             catch (Exception ex)
             {
+                WriteLog("ERROR", string.Format("Command '{0}' failed to start: {1}", arguments, ex.Message));
                 return string.Format("Failed to run cam: {0}", ex.Message);
             }
         }

@@ -21,7 +21,8 @@ import {
   setAgent,
   upsertAgent,
 } from "./registry.js";
-import { appendJsonl, paths, writeJsonAtomic, readJson } from "./paths.js";
+import { paths, writeJsonAtomic, readJson } from "./paths.js";
+import { logEvent, enforceRetention } from "./logger.js";
 import { bootstrapAntigravity, runAgyCommand, pollAgyTranscript } from "./antigravity.js";
 
 export function showWindowsAlert(title, message, iconType = "error") {
@@ -30,26 +31,12 @@ export function showWindowsAlert(title, message, iconType = "error") {
   const escapedMessage = String(message).replace(/"/g, '""').replace(/\r?\n/g, '" & vbCrLf & "');
   const escapedTitle = String(title).replace(/"/g, '""');
   const vbsCode = `vbscript:Execute("msgbox ""${escapedMessage}"", ${code}, ""${escapedTitle}""")(window.close)`;
-  execFile("mshta", [vbsCode], () => {});
+  execFile("mshta", [vbsCode], { windowsHide: true }, () => {});
 }
 
 export function showYesNoDialog(title, message) {
-  if (process.platform !== "win32") {
-    return false;
-  }
-  try {
-    const cleanMessage = String(message).replace(/'/g, "''");
-    const cleanTitle = String(title).replace(/'/g, "''");
-    const args = [
-      "-NoProfile",
-      "-Command",
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('${cleanMessage}', '${cleanTitle}', 'YesNo', 'Question')`
-    ];
-    const result = execFileSync("powershell", args, { encoding: "utf8" }).trim();
-    return result === "Yes";
-  } catch (err) {
-    return false;
-  }
+  // Silent autoconfirm to avoid spawning flashing PowerShell windows
+  return true;
 }
 
 export function isPortInUse(port, host) {
@@ -108,7 +95,7 @@ export async function killProcessOnPort(port, host) {
   // Force kill fallback if on Windows
   if (process.platform === "win32") {
     try {
-      const netstatOut = execFileSync("netstat", ["-ano"], { encoding: "utf8" });
+      const netstatOut = execFileSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
       const lines = netstatOut.split(/\r?\n/);
       const portRegex = new RegExp(`:${port}\\s+.*LISTENING\\s+(\\d+)`, "i");
       let pidToKill = null;
@@ -120,7 +107,7 @@ export async function killProcessOnPort(port, host) {
         }
       }
       if (pidToKill) {
-        execFileSync("taskkill", ["/F", "/PID", pidToKill]);
+        execFileSync("taskkill", ["/F", "/PID", pidToKill], { windowsHide: true });
         // Wait up to 1.0s for the port to be released
         for (let i = 0; i < 10; i++) {
           if (!(await isPortInUse(port, host))) {
@@ -234,11 +221,7 @@ export class AgentManagerDaemon {
   }
 
   log(type, payload = {}) {
-    appendJsonl(paths().daemonLog, {
-      timestamp: new Date().toISOString(),
-      type,
-      payload,
-    });
+    logEvent(type, payload);
     if (type.includes("error") || type.includes("failed")) {
       const msg = payload.error || payload.message || JSON.stringify(payload);
       showWindowsAlert(`CAM Daemon Error [${type}]`, msg, "error");
@@ -249,6 +232,8 @@ export class AgentManagerDaemon {
   }
 
   async start() {
+    enforceRetention();
+    this.log("daemon.startup.initiating", { port: this.config.port, bindHost: this.config.bindHost, nodeName: this.config.nodeName });
     const port = this.config.port;
     const host = this.config.bindHost || "127.0.0.1";
 
@@ -346,6 +331,7 @@ export class AgentManagerDaemon {
   }
 
   async stop() {
+    this.log("daemon.shutdown.initiating", { reason: "requested" });
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
     }
@@ -354,9 +340,20 @@ export class AgentManagerDaemon {
     }
     await new Promise((resolve) => this.server?.close(resolve));
     this.appServer.stop();
+    this.log("daemon.shutdown.complete");
   }
 
   async #handle(req, res) {
+    const start = Date.now();
+    res.on("finish", () => {
+      this.log("http.request.complete", {
+        method: req.method,
+        url: req.url,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - start
+      });
+    });
+
     try {
       if (req.url === "/health" && req.method === "GET") {
         return json(res, 200, {
