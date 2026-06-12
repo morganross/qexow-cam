@@ -346,7 +346,8 @@ namespace QexowCamGui
                     payload["targetAgent"] = agentName;
                     payload["sourceAgent"] = "windows-gui";
                     payload["sourceNode"] = Environment.MachineName;
-                    payload["message"] = "CAM GUI test " + correlationId + ": reply with your agent name, node name, current status, and this test id.";
+                    payload["correlationId"] = correlationId;
+                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". Reply by sending a CAM message to targetAgent \"windows-gui\". Do not only answer in this chat. Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
 
                     Dictionary<string, object> sendResult = ApiPost("/send", payload);
                     string turnId = NestedValue(sendResult, "message", "turnId");
@@ -354,12 +355,13 @@ namespace QexowCamGui
                     {
                         outputBox.Text = AppendLine(outputBox.Text, "STATE sent  delivery accepted");
                         outputBox.Text = AppendLine(outputBox.Text, "STATE wait  turnId=" + turnId + " testId=" + correlationId);
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE wait  waiting for CAM inbox reply to windows-gui, not reading session logs");
                     });
 
-                    string response = WaitForAgentResponse(agentName, correlationId, turnId, 90000);
+                    string response = WaitForMailboxResponse(agentName, correlationId, 90000);
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE done  agent response received from " + agentName);
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE done  CAM inbox reply received from " + agentName);
                         outputBox.Text = AppendLine(outputBox.Text, response);
                         outputBox.Text = AppendLine(outputBox.Text, "TEST PASS");
                         testButton.Enabled = true;
@@ -381,10 +383,10 @@ namespace QexowCamGui
             });
         }
 
-        private string WaitForAgentResponse(string agentName, string correlationId, string turnId, int timeoutMs)
+        private string WaitForMailboxResponse(string agentName, string correlationId, int timeoutMs)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            string lastSummary = "";
+            string lastSummary = "no matching CAM inbox reply seen";
             int pollCount = 0;
             string[] spinner = new string[] { "-", "\\", "|", "/" };
             while (stopwatch.ElapsedMilliseconds < timeoutMs)
@@ -396,21 +398,17 @@ namespace QexowCamGui
                     string mark = spinner[pollCount % spinner.Length];
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading " + agentName + " thread...");
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading windows-gui CAM inbox...");
                     });
 
-                    Dictionary<string, object> readResult = ApiGet("/agents/read?name=" + Uri.EscapeDataString(agentName) + "&includeTurns=true&turns=8");
-                    string response = FindAgentResponse(readResult, correlationId, turnId);
+                    Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=windows-gui&wait=5");
+                    string response = FindMailboxResponse(inboxResult, agentName, correlationId);
                     if (!String.IsNullOrWhiteSpace(response)) return response;
-                    lastSummary = SummarizeLatestAgentMessage(readResult);
-                    if (!String.IsNullOrWhiteSpace(lastSummary))
+                    lastSummary = SummarizeInbox(inboxResult);
+                    InvokeUi(delegate
                     {
-                        string summaryForUi = lastSummary.Length > 120 ? lastSummary.Substring(0, 120) : lastSummary;
-                        InvokeUi(delegate
-                        {
-                            outputBox.Text = AppendLine(outputBox.Text, "STATE seen  latest agent text does not match this test yet: " + summaryForUi);
-                        });
-                    }
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE seen  no matching reply yet; " + lastSummary);
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -423,102 +421,37 @@ namespace QexowCamGui
                 Thread.Sleep(2000);
             }
 
-            throw new Exception("Timed out waiting for " + agentName + " to answer testId=" + correlationId + ". Last observed agent message: " + lastSummary);
+            throw new Exception("Timed out waiting for a CAM inbox reply from " + agentName + " with testId=" + correlationId + ". " + lastSummary);
         }
 
-        private string FindAgentResponse(Dictionary<string, object> readResult, string correlationId, string turnId)
+        private string FindMailboxResponse(Dictionary<string, object> inboxResult, string agentName, string correlationId)
         {
-            Dictionary<string, object> thread = ExtractThread(readResult);
-            ArrayList turns = thread != null && thread.ContainsKey("turns") ? thread["turns"] as ArrayList : null;
-            if (turns == null) return "";
-
-            for (int i = turns.Count - 1; i >= 0; i--)
+            ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
+            if (messages == null) return "";
+            for (int i = messages.Count - 1; i >= 0; i--)
             {
-                Dictionary<string, object> turn = turns[i] as Dictionary<string, object>;
-                if (turn == null) continue;
-                bool isSendTurn = !String.IsNullOrWhiteSpace(turnId) && String.Equals(Value(turn, "id"), turnId, StringComparison.OrdinalIgnoreCase);
-                ArrayList items = turn.ContainsKey("items") ? turn["items"] as ArrayList : null;
-                if (items == null) continue;
-                for (int j = items.Count - 1; j >= 0; j--)
+                Dictionary<string, object> message = messages[i] as Dictionary<string, object>;
+                if (message == null) continue;
+                string body = Value(message, "body");
+                string messageCorrelationId = Value(message, "correlationId");
+                string sourceAgent = Value(message, "sourceAgent");
+                bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
+                    body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!idMatches) continue;
+                if (!String.IsNullOrWhiteSpace(sourceAgent) && !String.Equals(sourceAgent, agentName, StringComparison.OrdinalIgnoreCase))
                 {
-                    Dictionary<string, object> item = items[j] as Dictionary<string, object>;
-                    if (item == null || Value(item, "type") != "agentMessage") continue;
-                    string text = ExtractText(item).Trim();
-                    if (String.IsNullOrWhiteSpace(text)) continue;
-                    if (text.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0) return text;
-                    if (isSendTurn) return text;
+                    return "CAM reply matched testId=" + correlationId + " from " + sourceAgent + ":\r\n" + body;
                 }
-            }
-
-            return "";
-        }
-
-        private string SummarizeLatestAgentMessage(Dictionary<string, object> readResult)
-        {
-            Dictionary<string, object> thread = ExtractThread(readResult);
-            ArrayList turns = thread != null && thread.ContainsKey("turns") ? thread["turns"] as ArrayList : null;
-            if (turns == null) return "";
-            for (int i = turns.Count - 1; i >= 0; i--)
-            {
-                Dictionary<string, object> turn = turns[i] as Dictionary<string, object>;
-                if (turn == null) continue;
-                ArrayList items = turn.ContainsKey("items") ? turn["items"] as ArrayList : null;
-                if (items == null) continue;
-                for (int j = items.Count - 1; j >= 0; j--)
-                {
-                    Dictionary<string, object> item = items[j] as Dictionary<string, object>;
-                    if (item == null || Value(item, "type") != "agentMessage") continue;
-                    string text = ExtractText(item).Trim();
-                    if (text.Length > 200) return text.Substring(0, 200);
-                    return text;
-                }
+                return "CAM reply matched testId=" + correlationId + ":\r\n" + body;
             }
             return "";
         }
 
-        private Dictionary<string, object> ExtractThread(Dictionary<string, object> readResult)
+        private string SummarizeInbox(Dictionary<string, object> inboxResult)
         {
-            if (readResult == null || !readResult.ContainsKey("thread")) return null;
-            Dictionary<string, object> thread = readResult["thread"] as Dictionary<string, object>;
-            if (thread != null && thread.ContainsKey("thread") && thread["thread"] is Dictionary<string, object>)
-            {
-                return (Dictionary<string, object>)thread["thread"];
-            }
-            return thread;
-        }
-
-        private string ExtractText(Dictionary<string, object> item)
-        {
-            string text = Value(item, "text");
-            if (!String.IsNullOrWhiteSpace(text)) return text;
-            if (!item.ContainsKey("content") || item["content"] == null) return "";
-            string contentString = item["content"] as string;
-            if (contentString != null) return contentString;
-            ArrayList contentList = item["content"] as ArrayList;
-            if (contentList == null) return "";
-            StringBuilder builder = new StringBuilder();
-            foreach (object part in contentList)
-            {
-                string partString = part as string;
-                if (partString != null)
-                {
-                    if (builder.Length > 0) builder.AppendLine();
-                    builder.Append(partString);
-                    continue;
-                }
-                Dictionary<string, object> partMap = part as Dictionary<string, object>;
-                if (partMap != null)
-                {
-                    string partText = Value(partMap, "text");
-                    if (String.IsNullOrWhiteSpace(partText)) partText = Value(partMap, "content");
-                    if (!String.IsNullOrWhiteSpace(partText))
-                    {
-                        if (builder.Length > 0) builder.AppendLine();
-                        builder.Append(partText);
-                    }
-                }
-            }
-            return builder.ToString();
+            ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
+            if (messages == null) return "windows-gui inbox unreadable";
+            return "windows-gui inbox messages=" + messages.Count;
         }
 
         private static string NestedValue(Dictionary<string, object> map, params string[] keys)
