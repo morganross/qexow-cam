@@ -31,6 +31,26 @@ function run(cmd, opts = {}) {
   }
 }
 
+function setWindowsGuiSubsystem(exePath) {
+  const buffer = fs.readFileSync(exePath);
+  if (buffer.toString("ascii", 0, 2) !== "MZ") {
+    throw new Error(`${exePath} is not a Windows PE executable.`);
+  }
+  const peOffset = buffer.readUInt32LE(0x3c);
+  if (buffer.toString("ascii", peOffset, peOffset + 4) !== "PE\0\0") {
+    throw new Error(`${exePath} is missing a PE header.`);
+  }
+  const optionalHeaderOffset = peOffset + 24;
+  const subsystemOffset = optionalHeaderOffset + 0x44;
+  const current = buffer.readUInt16LE(subsystemOffset);
+  const windowsGui = 2;
+  if (current !== windowsGui) {
+    buffer.writeUInt16LE(windowsGui, subsystemOffset);
+    fs.writeFileSync(exePath, buffer);
+  }
+  console.log(`[BUILD] Windows subsystem for ${path.basename(exePath)}: ${current} -> ${windowsGui}`);
+}
+
 console.log("\n[BUILD] Step 1: Bundling with esbuild...");
 run(`npx esbuild bin/cam.js --bundle --platform=node --format=cjs --outfile=dist/cam-bundle.cjs --external:fsevents`);
 
@@ -50,6 +70,7 @@ fs.copyFileSync(process.execPath, path.join(DIST, "cam.exe"));
 
 console.log("\n[BUILD] Step 5: Injecting blob into cam.exe via postject...");
 run(`npx postject dist/cam.exe NODE_SEA_BLOB dist/cam-sea.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --overwrite`);
+setWindowsGuiSubsystem(path.join(DIST, "cam.exe"));
 
 const home = os.homedir();
 const x64Base = path.join(home, ".bin", "node-v22.22.3-linux-x64", "bin", "node");
