@@ -376,7 +376,13 @@ namespace QexowCamGui
                 Dictionary<string, object> result = ApiGet("/agents");
                 if (result.ContainsKey("agents") && result["agents"] is ArrayList)
                 {
-                    return ConvertAgentArray((ArrayList)result["agents"]);
+                    List<Dictionary<string, object>> apiAgents = ConvertAgentArray((ArrayList)result["agents"]);
+                    if (showArchivedCheckBox != null && showArchivedCheckBox.Checked)
+                    {
+                        log("active-filter bypass showArchived=true source=api count=" + apiAgents.Count);
+                        return apiAgents;
+                    }
+                    return FilterActiveAgents(apiAgents);
                 }
             }
             catch
