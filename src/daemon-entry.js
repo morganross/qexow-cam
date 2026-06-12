@@ -1,7 +1,8 @@
-#!/usr/bin/env node
-import { runDaemon } from "./daemon.js";
+import { runDaemon, showWindowsAlert } from "./daemon.js";
 
 runDaemon().catch((error) => {
-  console.error(error?.stack || error?.message || String(error));
+  const msg = error?.message || String(error);
+  console.error(error?.stack || msg);
+  showWindowsAlert("CAM Daemon Fatal Error", msg, "error");
   process.exit(1);
 });

@@ -24,7 +24,10 @@ function isInAnyWorkspace(cwd, workspaceRoots) {
 
 function main() {
   try {
-    const home = process.env.HOME || process.env.USERPROFILE || '/home/ubuntu';
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) {
+      throw new Error("User home directory (HOME or USERPROFILE env var) is not defined. Fallbacks are disabled.");
+    }
     const codexDir = path.join(home, '.codex');
     const globalStatePath = path.join(codexDir, '.codex-global-state.json');
     const sessionIndexPath = path.join(codexDir, 'session_index.jsonl');

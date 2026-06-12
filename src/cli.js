@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiRequest } from "./api.js";
-import { allPaths, DEFAULT_PORT, defaultCodexPath, initConfig, loadConfig } from "./config.js";
+import { allPaths, defaultCodexPath, initConfig, loadConfig } from "./config.js";
 import { readMailbox, listAgents } from "./registry.js";
 import { paths, projectRoot, readJson, writeJsonAtomic } from "./paths.js";
 
@@ -220,7 +220,9 @@ async function commandDoctor() {
 
   try {
     const health = await apiRequest("GET", "/health");
-    row(true, "CAM daemon running", `port ${config.port || DEFAULT_PORT}, node=${health.nodeName}, started=${health.startedAt}`);
+    row(true, "CAM config init", paths().config);
+    if (!config.port) throw new Error("CAM port is not configured.");
+    row(true, "CAM daemon running", `port ${config.port}, node=${health.nodeName}, started=${health.startedAt}`);
   } catch (error) {
     row(false, "CAM daemon running", `${error.message} — run: cam daemon start`);
   }
@@ -305,7 +307,8 @@ async function commandTunnel(args) {
     if (!peer) throw new Error(`unknown peer node: ${peerName}`);
     if (peer.transport !== "ssh") throw new Error(`peer ${peerName} is not an SSH peer`);
     const localPort = Number(opts.localPort || nextTunnelPort());
-    const remotePort = Number(opts.remotePort || DEFAULT_PORT);
+    const remotePort = opts.remotePort ? Number(opts.remotePort) : null;
+    if (!remotePort) throw new Error("Remote port must be specified via --remote-port. Fallbacks are disabled.");
     const ssh = tunnelSshArgs(peer, localPort, remotePort);
     if (action === "command") {
       console.log(renderCommand("ssh", ssh));
@@ -584,9 +587,13 @@ function commandQuote(value) {
 }
 
 function nextTunnelPort() {
+  const config = loadConfig();
+  if (!config.port) {
+    throw new Error("Configuration Error: CAM port is not configured.");
+  }
   const registry = readJson(paths().registry, { peers: {} });
   const count = Object.keys(registry.peers || {}).length;
-  return DEFAULT_PORT + count + 1;
+  return config.port + count + 1;
 }
 
 function recordTunnel(tunnel) {
@@ -671,7 +678,7 @@ function listPeerAgents(peer) {
 
   // Stage 2: Registry JSON file read
   if (!successStrategy) {
-    const command = `cat ~/.codex-agent-manager/agents.json`;
+    const command = `cat ~/.qexow-cam/agents.json`;
     const result = runSshSync(peer, [command]);
     if (result.ok) {
       try {
@@ -780,7 +787,7 @@ function sendViaPeer(payload) {
 async function commandService(cmd, args) {
   initConfig();
   const opts = parseOptions(args);
-  const name = opts.name || "CodexAgentManager";
+  const name = opts.name || "QexowCam";
   if (process.platform === "win32") {
     return cmd === "install-service" ? installWindowsTask(name) : uninstallWindowsTask(name);
   }
@@ -856,7 +863,7 @@ function installSystemdUserService(name) {
   ];
   const unit = [
     "[Unit]",
-    "Description=Codex Agent Manager",
+    "Description=Qexow CAM",
     "",
     "[Service]",
     "Type=simple",

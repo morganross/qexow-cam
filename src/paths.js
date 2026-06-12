@@ -8,7 +8,18 @@ export function projectRoot() {
 }
 
 export function homeDir() {
-  return process.env.CAM_HOME || path.join(os.homedir(), ".codex-agent-manager");
+  if (process.env.CAM_HOME) return process.env.CAM_HOME;
+  const newDir = path.join(os.homedir(), ".qexow-cam");
+  // One-time auto-migration from old directory name
+  const oldDir = path.join(os.homedir(), ".codex-agent-manager");
+  if (!fs.existsSync(newDir) && fs.existsSync(oldDir)) {
+    try {
+      fs.renameSync(oldDir, newDir);
+    } catch {
+      // If rename fails (e.g. cross-device), leave old dir in place — not fatal
+    }
+  }
+  return newDir;
 }
 
 export function paths() {

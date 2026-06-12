@@ -1,6 +1,6 @@
-# Codex Agent Manager
+# Qexow CAM
 
-`codex-agent-manager` is a local daemon and CLI for routing messages between named Codex agents without touching Codex Desktop UI state or transcript files.
+`qexow-cam` is a local daemon and CLI for routing messages between named agents without touching Codex Desktop UI state or transcript files.
 
 The manager has two strict boundaries:
 
@@ -29,9 +29,9 @@ $env:CAM_NODE_EXE = "C:\path\to\node.exe"
 On Linux nodes:
 
 ```bash
-node /home/ubuntu/codex-agent-manager/bin/cam.js init
-node /home/ubuntu/codex-agent-manager/bin/cam.js daemon start
-node /home/ubuntu/codex-agent-manager/bin/cam.js daemon status
+node /home/ubuntu/qexow-cam/bin/cam.js init
+node /home/ubuntu/qexow-cam/bin/cam.js daemon start
+node /home/ubuntu/qexow-cam/bin/cam.js daemon status
 ```
 
 Install login/reboot persistence:
@@ -41,7 +41,7 @@ Install login/reboot persistence:
 ```
 
 ```bash
-node /home/ubuntu/codex-agent-manager/bin/cam.js install-service
+node /home/ubuntu/qexow-cam/bin/cam.js install-service
 ```
 
 Windows first tries a logon scheduled task and falls back to a no-admin Startup-folder launcher if task creation is denied. Linux installs a user systemd unit when available and falls back to an `@reboot` cron entry if user systemd is unavailable.
@@ -62,7 +62,7 @@ On daemon start, CAM also rehydrates any already-registered agents with saved th
 
 ### Sending Messages
 
-Message routing is the core function of the Codex Agent Manager. You can easily send messages to any registered agent using the native `send` command. 
+Message routing is the core function of Qexow CAM. You can easily send messages to any registered agent using the native `send` command.
 
 ```powershell
 .\cam.cmd send backend-local "Please reply with your node name and cwd."
@@ -98,7 +98,7 @@ If delivery through `turn/start` or `turn/steer` fails, the message is saved in 
 Enroll a remote node from Windows:
 
 ```powershell
-.\cam.cmd node enroll frontend --ssh ubuntu@example.com --key "C:\path\to\private-key.pem" --remote-root /home/ubuntu/codex-agent-manager
+.\cam.cmd node enroll frontend --ssh ubuntu@example.com --key "C:\path\to\private-key.pem" --remote-root /home/ubuntu/qexow-cam
 ```
 
 Then send to a named remote agent with the same command shape:
@@ -112,10 +112,10 @@ The local CLI first tries the local daemon. If the target agent is unknown local
 For cloud-to-cloud routing, enroll private-IP peers from nodes that already have an approved SSH key:
 
 ```bash
-node /home/ubuntu/codex-agent-manager/bin/cam.js node enroll searchbox \
+node /home/ubuntu/qexow-cam/bin/cam.js node enroll searchbox \
   --ssh ubuntu@10.0.0.10 \
   --key /path/to/private/key.pem \
-  --remote-root /home/ubuntu/codex-agent-manager
+  --remote-root /home/ubuntu/qexow-cam
 ```
 
 ## SSH Tunnels
@@ -142,8 +142,8 @@ The tunnel is optional for normal `cam send` SSH peer routing. It is useful for 
 Default user-local state:
 
 ```text
-C:\Users\<user>\.codex-agent-manager
-/home/ubuntu/.codex-agent-manager
+C:\Users\<user>\.qexow-cam
+/home/ubuntu/.qexow-cam
 ```
 
 Important files:

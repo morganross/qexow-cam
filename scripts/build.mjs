@@ -50,29 +50,36 @@ fs.writeFileSync(path.join(DIST, "sea-config.json"), JSON.stringify(seaConfig, n
 console.log("\n[BUILD] Step 3: Generating SEA blob...");
 run(`node --experimental-sea-config dist/sea-config.json`);
 
-// ── Step 4: Copy node.exe to cam.exe ─────────────────────────────────────────
-console.log("\n[BUILD] Step 4: Copying node.exe -> dist/cam.exe...");
+// ── Step 4: Copy node.exe to cam-core.exe ─────────────────────────────────────────
+console.log("\n[BUILD] Step 4: Copying node.exe -> dist/cam-core.exe...");
 const nodeExe = process.execPath;
-const camExe = path.join(DIST, "cam.exe");
-fs.copyFileSync(nodeExe, camExe);
+const camCoreExe = path.join(DIST, "cam-core.exe");
+fs.copyFileSync(nodeExe, camCoreExe);
 
 // ── Step 5: Inject blob via postject ─────────────────────────────────────────
-console.log("\n[BUILD] Step 5: Injecting blob into cam.exe via postject...");
-run(`npx postject dist/cam.exe NODE_SEA_BLOB dist/cam-sea.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --overwrite`);
+console.log("\n[BUILD] Step 5: Injecting blob into cam-core.exe via postject...");
+run(`npx postject dist/cam-core.exe NODE_SEA_BLOB dist/cam-sea.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --overwrite`);
 
-// ── Step 6: Compile cam-tray.exe via csc.exe ─────────────────────────────────
-console.log("\n[BUILD] Step 6: Compiling cam-tray.exe via native C# compiler...");
+// ── Step 6: Compile cam.exe via csc.exe ─────────────────────────────────
+console.log("\n[BUILD] Step 6: Compiling cam.exe via native C# compiler with resources...");
 const cscPath = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
 if (fs.existsSync(cscPath)) {
-  run(`"${cscPath}" /target:winexe /out:dist\\cam-tray.exe src\\tray\\CamTray.cs`);
+  run(`"${cscPath}" /target:winexe /out:dist\\cam.exe /resource:dist\\cam-core.exe /resource:dist\\daemon-entry.js /resource:src\\query_threads.py /resource:src\\remote_query_threads.py /resource:src\\remote_query_threads.js src\\tray\\CamTray.cs`);
 } else {
-  console.warn("[BUILD] WARNING: csc.exe not found, skipping cam-tray.exe compilation.");
+  console.warn("[BUILD] WARNING: csc.exe not found, skipping cam.exe compilation.");
 }
 
-// Copy query_threads.py to dist
-fs.copyFileSync(path.join(ROOT, "src", "query_threads.py"), path.join(DIST, "query_threads.py"));
+// Clean up all dist files except cam.exe
+console.log("\n[BUILD] Step 7: Cleaning up dist directory...");
+for (const file of fs.readdirSync(DIST)) {
+  if (file !== "cam.exe") {
+    try {
+      fs.rmSync(path.join(DIST, file), { recursive: true, force: true });
+    } catch (e) {
+      console.warn(`[BUILD] Could not delete ${file}: ${e.message}`);
+    }
+  }
+}
 
 console.log("\n[BUILD] ✅ Build complete! Outputs:");
 console.log(`  dist/cam.exe`);
-console.log(`  dist/cam-tray.exe`);
-console.log(`  dist/query_threads.py`);

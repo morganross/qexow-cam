@@ -34,7 +34,7 @@ export class AppServerClient extends EventEmitter {
     });
 
     const result = await this.request("initialize", {
-      clientInfo: { name: "codex-agent-manager", version: "0.1.0" },
+      clientInfo: { name: "qexow-cam", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     });
     this.notify("initialized");

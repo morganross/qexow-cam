@@ -40,6 +40,7 @@ export function upsertAgent(config, partial) {
     createdAt: existing.createdAt || now,
     updatedAt: now,
     lastDelivery: partial.lastDelivery ?? existing.lastDelivery ?? null,
+    threadSource: partial.threadSource !== undefined ? partial.threadSource : (existing.threadSource ?? "codex"),
   };
   registry.agents[partial.name] = agent;
   saveRegistry(registry);

@@ -1,8 +1,8 @@
 {
-  "name": "codex-agent-manager",
+  "name": "qexow-cam",
   "version": "1.8.0",
   "private": true,
-  "description": "Local Codex app-server-backed agent registry and message bus.",
+  "description": "Qexow CAM — local agent registry and message bus.",
   "type": "module",
   "bin": {
     "cam": "./bin/cam.js"

@@ -10,12 +10,176 @@ namespace CamTray
 {
     static class Program
     {
-        [STAThread]
-        static void Main()
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern bool AttachConsole(int dwProcessId);
+        private const int ATTACH_PARENT_PROCESS = -1;
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GetStdHandle(int nStdHandle);
+        private const int STD_OUTPUT_HANDLE = -11;
+        private const int STD_ERROR_HANDLE = -12;
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern int GetFileType(IntPtr hFile);
+        private const int FILE_TYPE_DISK = 0x0001;
+        private const int FILE_TYPE_CHAR = 0x0002;
+        private const int FILE_TYPE_PIPE = 0x0003;
+
+        internal static string GetBinDir()
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new TrayApplicationContext());
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "QexowCam", "bin");
+        }
+
+        private static void ExtractAllResources()
+        {
+            try
+            {
+                string binDir = GetBinDir();
+                ExtractResource("cam-core.exe", Path.Combine(binDir, "cam-core.exe"));
+                ExtractResource("daemon-entry.js", Path.Combine(binDir, "daemon-entry.js"));
+                ExtractResource("query_threads.py", Path.Combine(binDir, "query_threads.py"));
+                ExtractResource("remote_query_threads.py", Path.Combine(binDir, "remote_query_threads.py"));
+                ExtractResource("remote_query_threads.js", Path.Combine(binDir, "remote_query_threads.js"));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fatal: Failed to extract resources: " + ex.Message, "CAM Resource Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(1);
+            }
+        }
+
+        private static void ExtractResource(string resourceName, string targetPath)
+        {
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            string actualResourceName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(name => name.EndsWith(resourceName, StringComparison.OrdinalIgnoreCase));
+
+            if (string.IsNullOrEmpty(actualResourceName))
+            {
+                throw new Exception("Resource not found in manifest: " + resourceName);
+            }
+
+            FileInfo fileInfo = new FileInfo(targetPath);
+            using (Stream stream = assembly.GetManifestResourceStream(actualResourceName))
+            {
+                if (stream == null)
+                {
+                    throw new Exception("Manifest stream is null for " + actualResourceName);
+                }
+
+                if (fileInfo.Exists && fileInfo.Length == stream.Length)
+                {
+                    return;
+                }
+
+                string dir = Path.GetDirectoryName(targetPath);
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                using (FileStream fileStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write))
+                {
+                    byte[] buffer = new byte[8192];
+                    int bytesRead;
+                    while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        fileStream.Write(buffer, 0, bytesRead);
+                    }
+                }
+            }
+        }
+
+        [STAThread]
+        static void Main(string[] args)
+        {
+            ExtractAllResources();
+
+            if (args.Length > 0)
+            {
+                RunCli(args);
+            }
+            else
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new TrayApplicationContext());
+            }
+        }
+
+        private static void RunCli(string[] args)
+        {
+            try
+            {
+                IntPtr stdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                int outType = GetFileType(stdOut);
+
+                if (outType != FILE_TYPE_PIPE && outType != FILE_TYPE_DISK)
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
+
+                try
+                {
+                    var stdOutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+                    if (stdOutHandle != IntPtr.Zero && stdOutHandle != (IntPtr)(-1))
+                    {
+                        var safeFileHandle = new Microsoft.Win32.SafeHandles.SafeFileHandle(stdOutHandle, false);
+                        var fileStream = new FileStream(safeFileHandle, FileAccess.Write);
+                        var standardOutput = new StreamWriter(fileStream, System.Text.Encoding.Default) { AutoFlush = true };
+                        Console.SetOut(standardOutput);
+                    }
+                }
+                catch {}
+
+                try
+                {
+                    var stdErrHandle = GetStdHandle(STD_ERROR_HANDLE);
+                    if (stdErrHandle != IntPtr.Zero && stdErrHandle != (IntPtr)(-1))
+                    {
+                        var safeFileHandleErr = new Microsoft.Win32.SafeHandles.SafeFileHandle(stdErrHandle, false);
+                        var fileStreamErr = new FileStream(safeFileHandleErr, FileAccess.Write);
+                        var standardError = new StreamWriter(fileStreamErr, System.Text.Encoding.Default) { AutoFlush = true };
+                        Console.SetError(standardError);
+                    }
+                }
+                catch {}
+
+                string binDir = GetBinDir();
+                string coreExe = Path.Combine(binDir, "cam-core.exe");
+                if (!File.Exists(coreExe))
+                {
+                    Console.Error.WriteLine("Error: cam-core.exe not found at " + coreExe);
+                    Environment.Exit(1);
+                }
+
+                string arguments = string.Join(" ", args.Select(a => a.Contains(" ") ? "\"" + a + "\"" : a));
+                ProcessStartInfo psi = new ProcessStartInfo(coreExe, arguments)
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (Process process = Process.Start(psi))
+                {
+                    process.OutputDataReceived += (sender, e) => { if (e.Data != null) Console.Out.WriteLine(e.Data); };
+                    process.ErrorDataReceived += (sender, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    process.WaitForExit();
+                    try { Console.Out.Flush(); } catch {}
+                    try { Console.Error.Flush(); } catch {}
+                    Environment.Exit(process.ExitCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Failed to run CAM CLI: " + ex.Message);
+                Environment.Exit(1);
+            }
         }
     }
 
@@ -41,7 +205,7 @@ namespace CamTray
                 Icon = SystemIcons.Shield,
                 ContextMenuStrip = contextMenu,
                 Visible = true,
-                Text = "Codex Agent Manager"
+                Text = "Qexow CAM"
             };
 
             trayIcon.DoubleClick += Status_Click;
@@ -84,7 +248,7 @@ namespace CamTray
             headerPanel.Padding = new Padding(15, 12, 15, 12);
 
             Label titleLabel = new Label();
-            titleLabel.Text = "CODEX AGENT MANAGER SYSTEM STATUS";
+            titleLabel.Text = "QEXOW CAM SYSTEM STATUS";
             titleLabel.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
             titleLabel.ForeColor = Color.FromArgb(0, 162, 232);
             titleLabel.AutoSize = true;
@@ -328,12 +492,12 @@ namespace CamTray
         {
             try
             {
-                string exeDir = AppDomain.CurrentDomain.BaseDirectory;
-                string camExe = Path.Combine(exeDir, "cam.exe");
+                string binDir = Program.GetBinDir();
+                string camExe = Path.Combine(binDir, "cam-core.exe");
 
                 if (!File.Exists(camExe))
                 {
-                    camExe = "cam.exe"; // Fallback to PATH
+                    camExe = "cam-core.exe"; // Fallback to PATH
                 }
 
                 ProcessStartInfo processInfo = new ProcessStartInfo(camExe, arguments)

@@ -4,7 +4,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import net from "node:net";
 import { AppServerClient, textInput } from "./app-server.js";
 import { ensureLocalToken, loadConfig } from "./config.js";
 import {
@@ -21,6 +22,119 @@ import {
   upsertAgent,
 } from "./registry.js";
 import { appendJsonl, paths, writeJsonAtomic, readJson } from "./paths.js";
+
+export function showWindowsAlert(title, message, iconType = "error") {
+  if (process.platform !== "win32") return;
+  const code = iconType === "error" ? 16 : 48;
+  const escapedMessage = String(message).replace(/"/g, '""').replace(/\r?\n/g, '" & vbCrLf & "');
+  const escapedTitle = String(title).replace(/"/g, '""');
+  const vbsCode = `vbscript:Execute("msgbox ""${escapedMessage}"", ${code}, ""${escapedTitle}""")(window.close)`;
+  execFile("mshta", [vbsCode], () => {});
+}
+
+export function showYesNoDialog(title, message) {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  try {
+    const cleanMessage = String(message).replace(/'/g, "''");
+    const cleanTitle = String(title).replace(/'/g, "''");
+    const args = [
+      "-NoProfile",
+      "-Command",
+      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('${cleanMessage}', '${cleanTitle}', 'YesNo', 'Question')`
+    ];
+    const result = execFileSync("powershell", args, { encoding: "utf8" }).trim();
+    return result === "Yes";
+  } catch (err) {
+    return false;
+  }
+}
+
+export function isPortInUse(port, host) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => {
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+}
+
+export function gracefulShutdown(port, host) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: host,
+      port: port,
+      path: "/shutdown",
+      method: "POST",
+      timeout: 1000,
+    }, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on("error", () => {
+      resolve(false);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
+  });
+}
+
+export async function killProcessOnPort(port, host) {
+  // Try graceful shutdown first
+  await gracefulShutdown(port, host);
+  
+  // Wait up to 1.5s for the port to be released
+  for (let i = 0; i < 15; i++) {
+    if (!(await isPortInUse(port, host))) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  
+  // Force kill fallback if on Windows
+  if (process.platform === "win32") {
+    try {
+      const netstatOut = execFileSync("netstat", ["-ano"], { encoding: "utf8" });
+      const lines = netstatOut.split(/\r?\n/);
+      const portRegex = new RegExp(`:${port}\\s+.*LISTENING\\s+(\\d+)`, "i");
+      let pidToKill = null;
+      for (const line of lines) {
+        const match = line.match(portRegex);
+        if (match) {
+          pidToKill = match[1];
+          break;
+        }
+      }
+      if (pidToKill) {
+        execFileSync("taskkill", ["/F", "/PID", pidToKill]);
+        // Wait up to 1.0s for the port to be released
+        for (let i = 0; i < 10; i++) {
+          if (!(await isPortInUse(port, host))) {
+            return true;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    } catch (err) {
+      // Ignore errors finding or killing the process
+    }
+  }
+  
+  return !(await isPortInUse(port, host));
+}
 
 function sq(val) {
   if (val === null || val === undefined) return "''";
@@ -124,9 +238,34 @@ export class AgentManagerDaemon {
       type,
       payload,
     });
+    if (type.includes("error") || type.includes("failed")) {
+      const msg = payload.error || payload.message || JSON.stringify(payload);
+      showWindowsAlert(`CAM Daemon Error [${type}]`, msg, "error");
+    } else if (type.includes("warn") || type.includes("warning")) {
+      const msg = payload.warn || payload.warning || payload.message || JSON.stringify(payload);
+      showWindowsAlert(`CAM Daemon Warning [${type}]`, msg, "warning");
+    }
   }
 
   async start() {
+    const port = this.config.port;
+    const host = this.config.bindHost || "127.0.0.1";
+
+    if (await isPortInUse(port, host)) {
+      const title = "CAM Port Conflict";
+      const message = "Port in use. Do you want to close existing CAM?";
+      if (showYesNoDialog(title, message)) {
+        this.log("daemon.port_conflict.resolving", { port });
+        const killed = await killProcessOnPort(port, host);
+        if (!killed) {
+          throw new Error(`Port ${port} is in use and could not be freed.`);
+        }
+        this.log("daemon.port_conflict.resolved", { port });
+      } else {
+        throw new Error(`Port ${port} is already in use. Startup aborted by user.`);
+      }
+    }
+
     await this.appServer.start();
     for (const agent of listAgents(this.config)) {
       if (agent.threadId) this.threadToAgent.set(agent.threadId, agent.name);
@@ -318,12 +457,16 @@ export class AgentManagerDaemon {
       if (url.pathname === "/agents/read" && req.method === "GET") {
         const name = url.searchParams.get("name");
         const includeTurns = url.searchParams.get("includeTurns") !== "false";
-        if (name === "antigravity") {
-          const agent = getAgent(this.config, "antigravity") || upsertAgent(this.config, { name: "antigravity" });
+        const targetAgentObj = getAgent(this.config, name);
+        if (targetAgentObj && targetAgentObj.threadSource === "antigravity") {
+          const targetAgentUuid = targetAgentObj.threadId;
+          if (!targetAgentUuid) {
+            throw new Error(`Target Antigravity agent ${name} is missing a conversation UUID.`);
+          }
           return json(res, 200, {
             ok: true,
-            agent,
-            thread: { id: agent.threadId || "antigravity-session-uuid", status: { type: agent.status || "idle" }, turns: [] }
+            agent: targetAgentObj,
+            thread: { id: targetAgentUuid, status: { type: targetAgentObj.status || "idle" }, turns: [] }
           });
         }
         const agent = getAgent(this.config, name);
@@ -474,9 +617,9 @@ export class AgentManagerDaemon {
     const promise = (async () => {
       let agent = getAgent(this.config, name);
       if (!agent) throw new Error(`unknown agent: ${name}`);
-      if (name === "antigravity") {
+      if (agent.threadSource === "antigravity") {
         if (!agent.threadId) {
-          agent = setAgent(this.config, name, { threadId: "antigravity-session-uuid", status: "idle" });
+          throw new Error(`Antigravity agent ${name} is missing a threadId/conversation UUID.`);
         }
         return agent;
       }
@@ -597,7 +740,6 @@ export class AgentManagerDaemon {
       }
 
       const activeThreadIds = new Set();
-      const defaultWorkspace = "C:\\Users\\kjhgf\\OneDrive\\Documents\\New project";
 
       const normalizeName = (text) => {
         if (!text) return "";
@@ -620,6 +762,20 @@ export class AgentManagerDaemon {
         }
         if (!name) {
           name = `agent-${tid.substring(0, 8)}`;
+        }
+        if (name && !name.endsWith("-agent")) {
+          name = `${name}-agent`;
+        }
+
+        let cwd = thread.cwd;
+        if (!cwd || cwd === "outside-of-project") {
+          const errMsg = `Thread ${tid} (${name}) is missing a valid workspace path. Skipping registry sync.`;
+          this.log("sync.agent.error", { threadId: tid, name, error: errMsg });
+          appendEvent("sync.agent.error", { threadId: tid, name, error: errMsg });
+          continue;
+        }
+        if (cwd.startsWith("\\\\?\\")) {
+          cwd = cwd.substring(4);
         }
 
         if (existingThreadMap.has(tid)) {
@@ -647,16 +803,14 @@ export class AgentManagerDaemon {
                   this.log("sync.agent.renamed.delete-old", { oldName: agent.name, newName: uniqueName, threadId: tid });
                 }
                 
-                let cwd = thread.cwd || defaultWorkspace;
-                if (cwd.startsWith("\\\\?\\")) {
-                  cwd = cwd.substring(4);
-                }
+                // cwd has already been resolved and normalized
                 
                 upsertAgent(this.config, {
                   name: uniqueName,
                   cwd,
                   threadId: tid,
                   status: agent.status || "idle",
+                  threadSource: thread.thread_source,
                 });
                 this.threadToAgent.set(tid, uniqueName);
                 this.log("sync.agent.renamed.created-new", { oldName: agent.name, newName: uniqueName, threadId: tid });
@@ -679,10 +833,7 @@ export class AgentManagerDaemon {
           uniqueName = `${name}-${counter}`;
         }
 
-        let cwd = thread.cwd || defaultWorkspace;
-        if (cwd.startsWith("\\\\?\\")) {
-          cwd = cwd.substring(4);
-        }
+        // cwd has already been resolved and normalized
 
         try {
           const agent = upsertAgent(this.config, {
@@ -690,6 +841,7 @@ export class AgentManagerDaemon {
             cwd,
             threadId: tid,
             status: "idle",
+            threadSource: thread.thread_source,
           });
           this.threadToAgent.set(tid, uniqueName);
           appendEvent("agent.created", { agent });
@@ -760,20 +912,16 @@ export class AgentManagerDaemon {
     if (!existingMessage && !body?.message) throw new Error("message is required");
     
     const targetAgent = existingMessage ? existingMessage.targetAgent : body.targetAgent;
+    const targetAgentObj = getAgent(this.config, targetAgent);
 
-    if (targetAgent === "antigravity") {
-      const target = getAgent(this.config, "antigravity") || upsertAgent(this.config, {
-        name: "antigravity",
-        cwd: (existingMessage ? null : body.cwd) || paths().root,
-        status: "idle",
-      });
+    if (targetAgentObj && targetAgentObj.threadSource === "antigravity") {
       const message = existingMessage || {
         messageId: crypto.randomUUID(),
         correlationId: body.correlationId || null,
         sourceAgent: body.sourceAgent || "operator",
-        targetAgent: "antigravity",
+        targetAgent,
         sourceNode: body.sourceNode || this.config.nodeName,
-        targetNode: target.node,
+        targetNode: targetAgentObj.node,
         timestamp: new Date().toISOString(),
         body: body.message,
         delivery: "delivered",
@@ -781,9 +929,9 @@ export class AgentManagerDaemon {
       if (existingMessage) {
         message.delivery = "delivered";
       }
-      setAgent(this.config, "antigravity", { status: "active", lastDelivery: message });
+      setAgent(this.config, targetAgent, { status: "active", lastDelivery: message });
       appendEvent("message.delivered", message);
-      this.log("message.delivered.external", { messageId: message.messageId, target: "antigravity" });
+      this.log("message.delivered.external", { messageId: message.messageId, target: targetAgent });
       
       if (existingMessage) {
         markMailboxSurfaced([message.messageId], null);
@@ -791,8 +939,9 @@ export class AgentManagerDaemon {
       return { delivered: true, queued: false, message };
     }
 
-    if (!existingMessage && body.sourceAgent === "antigravity") {
-      setAgent(this.config, "antigravity", { status: "idle" });
+    const source = body ? getAgent(this.config, body.sourceAgent) : null;
+    if (!existingMessage && body && source && source.threadSource === "antigravity") {
+      setAgent(this.config, body.sourceAgent, { status: "idle" });
       this.#checkInboxListeners();
     }
 
@@ -850,7 +999,7 @@ export class AgentManagerDaemon {
     const pendingText = pending.length
       ? [
           "",
-          "[Queued messages surfaced by Codex Agent Manager]",
+          "[Queued messages surfaced by Qexow CAM]",
           ...pending.map((queued, index) => [
             `queuedMessage ${index + 1}:`,
             `messageId: ${queued.messageId}`,
@@ -862,7 +1011,7 @@ export class AgentManagerDaemon {
       : "";
 
     const prompt = [
-      "[Codex Agent Manager message]",
+      "[Qexow CAM message]",
       `messageId: ${message.messageId}`,
       `sourceAgent: ${message.sourceAgent}`,
       `sourceNode: ${message.sourceNode}`,
@@ -1048,7 +1197,7 @@ export class AgentManagerDaemon {
 
     // Stage 2: Registry JSON file
     if (!successStrategy) {
-      const command = `cat ~/.codex-agent-manager/agents.json`;
+      const command = `cat ~/.qexow-cam/agents.json`;
       const result = await this.runSshCommand(peer, [command]);
       if (result.ok) {
         try {
