@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.6
+AppVersion=2.1.7
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -26,6 +26,7 @@ Name: "tray"; Description: "System Tray GUI & Shortcuts"; Types: full custom
 [Files]
 ; The ONE executable — cam.exe is a Node.js SEA containing all logic
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: daemon
+Source: "dist\qexow-tray-proof.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: tray
 
 [Icons]
 ; Start Menu: opens status window (signals running instance, or launches fresh)
@@ -38,11 +39,13 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}')) and not IsAdminInstallMode
 ; Launch tray on Windows startup (user-level)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Qexow CAM"; ValueData: """{app}\cam.exe"" tray"; Components: tray
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Qexow CAM Tray Proof"; ValueData: """{app}\qexow-tray-proof.exe"""; Components: tray
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Codex Agent Manager"; Flags: deletevalue
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Codex Agent Manager Tray"; Flags: deletevalue
 
 [InstallDelete]
 Type: files; Name: "{app}\cam-tray.exe"
+Type: files; Name: "{app}\qexow-tray-proof.exe"
 Type: files; Name: "{app}\tray_windows_release.exe"
 Type: files; Name: "{app}\cam-core.exe"
 Type: files; Name: "{app}\cam-bundle.cjs"
@@ -51,12 +54,14 @@ Type: files; Name: "{userstartup}\CodexAgentManager.cmd"
 Type: files; Name: "{userstartup}\QexowCam.cmd"
 Type: files; Name: "{userstartup}\Codex Agent Manager.cmd"
 Type: files; Name: "{localappdata}\Qexow CAM\cam.exe"
+Type: files; Name: "{localappdata}\Qexow CAM\qexow-tray-proof.exe"
 Type: files; Name: "{localappdata}\Qexow CAM\cam-bundle.cjs"
 Type: files; Name: "{localappdata}\Qexow CAM\daemon-entry.js"
 Type: files; Name: "{localappdata}\Qexow CAM\cam-tray.exe"
 Type: files; Name: "{localappdata}\Qexow CAM\tray_windows_release.exe"
 Type: dirifempty; Name: "{localappdata}\Qexow CAM"
 Type: files; Name: "{localappdata}\Programs\Codex Agent Manager\cam.exe"
+Type: files; Name: "{localappdata}\Programs\Codex Agent Manager\qexow-tray-proof.exe"
 Type: files; Name: "{localappdata}\Programs\Codex Agent Manager\cam-bundle.cjs"
 Type: files; Name: "{localappdata}\Programs\Codex Agent Manager\daemon-entry.js"
 Type: files; Name: "{localappdata}\Programs\Codex Agent Manager\cam-tray.exe"
@@ -65,6 +70,7 @@ Type: dirifempty; Name: "{localappdata}\Programs\Codex Agent Manager"
 
 [UninstallRun]
 Filename: "taskkill"; Parameters: "/F /T /IM cam-tray.exe"; Flags: runhidden; RunOnceId: "KillOldTray"
+Filename: "taskkill"; Parameters: "/F /T /IM qexow-tray-proof.exe"; Flags: runhidden; RunOnceId: "KillTrayProof"
 Filename: "taskkill"; Parameters: "/F /T /IM tray_windows_release.exe"; Flags: runhidden; RunOnceId: "KillOldTrayRelease"
 Filename: "taskkill"; Parameters: "/F /T /IM cam-core.exe"; Flags: runhidden; RunOnceId: "KillOldCore"
 Filename: "taskkill"; Parameters: "/F /T /IM cam.exe"; Flags: runhidden; RunOnceId: "KillCam"
@@ -80,6 +86,7 @@ Type: files; Name: "{userstartup}\Codex Agent Manager.cmd"
 Filename: "{app}\cam.exe"; Parameters: "install-service"; StatusMsg: "Configuring startup service..."; Components: daemon; Flags: runhidden; Check: not IsHeadlessInstall
 ; After install: start tray (which auto-starts the daemon) — no cmd windows
 Filename: "{app}\cam.exe"; Parameters: "tray"; Description: "Launch Qexow CAM System Tray"; Flags: postinstall nowait; Components: tray; Check: not IsHeadlessInstall
+Filename: "{app}\qexow-tray-proof.exe"; Description: "Launch 8-icon tray proof host"; Flags: nowait; Components: tray; Check: not IsHeadlessInstall
 
 [Code]
 procedure KillProcess(ImageName: string);
@@ -119,6 +126,7 @@ end;
 function InitializeSetup(): Boolean;
 begin
   // Stop every known CAM executable name before files are replaced.
+  KillProcess('qexow-tray-proof.exe');
   KillProcess('cam.exe');
   KillProcess('cam-core.exe');
   KillProcess('cam-tray.exe');

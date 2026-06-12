@@ -63,6 +63,7 @@ jobs:
         files: |
           dist/QexowCamSetup.exe
           dist/cam.exe
+          dist/qexow-tray-proof.exe
           dist/cam-linux-x64
           dist/cam-linux-arm64
           dist/cam-bundle.cjs

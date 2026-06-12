@@ -51,6 +51,18 @@ function setWindowsGuiSubsystem(exePath) {
   console.log(`[BUILD] Windows subsystem for ${path.basename(exePath)}: ${current} -> ${windowsGui}`);
 }
 
+function compileTrayProofHost() {
+  const cscPath = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
+  if (!fs.existsSync(cscPath)) {
+    console.warn(`[BUILD] csc.exe not found at ${cscPath}; skipping qexow-tray-proof.exe`);
+    return false;
+  }
+  console.log("\n[BUILD] Compiling qexow-tray-proof.exe...");
+  spawnSync("taskkill.exe", ["/F", "/T", "/IM", "qexow-tray-proof.exe"], { stdio: "ignore" });
+  run(`"${cscPath}" /nologo /target:winexe /out:dist\\qexow-tray-proof.exe src\\windows\\TrayProofHost.cs`);
+  return true;
+}
+
 console.log("\n[BUILD] Step 1: Bundling with esbuild...");
 run(`npx esbuild bin/cam.js --bundle --platform=node --format=cjs --outfile=dist/cam-bundle.cjs --external:fsevents`);
 
@@ -93,7 +105,8 @@ if (fs.existsSync(arm64Base)) {
 }
 
 console.log("\n[BUILD] Step 6: Cleaning up intermediate dist files...");
-const keep = new Set(["cam.exe", "cam-bundle.cjs", "cam-linux-x64", "cam-linux-arm64"]);
+const hasTrayProof = compileTrayProofHost();
+const keep = new Set(["cam.exe", "cam-bundle.cjs", "cam-linux-x64", "cam-linux-arm64", "qexow-tray-proof.exe"]);
 for (const file of fs.readdirSync(DIST)) {
   if (!keep.has(file)) {
     try {
