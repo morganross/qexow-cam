@@ -188,6 +188,8 @@ namespace CamTray
         private NotifyIcon trayIcon;
         private Form statusForm;
         private TableLayoutPanel grid;
+        private TableLayoutPanel mappingsGrid;
+        private TextBox txtLogReadout;
 
         public TrayApplicationContext()
         {
@@ -233,8 +235,8 @@ namespace CamTray
 
             statusForm = new Form();
             statusForm.Text = "CAM System Status";
-            statusForm.Size = new Size(760, 520);
-            statusForm.MinimumSize = new Size(600, 400);
+            statusForm.Size = new Size(1100, 750);
+            statusForm.MinimumSize = new Size(800, 600);
             statusForm.StartPosition = FormStartPosition.CenterScreen;
             statusForm.BackColor = Color.FromArgb(20, 20, 30);
             statusForm.ForeColor = Color.White;
@@ -248,32 +250,14 @@ namespace CamTray
             headerPanel.Padding = new Padding(15, 12, 15, 12);
 
             Label titleLabel = new Label();
-            titleLabel.Text = "QEXOW CAM SYSTEM STATUS";
+            titleLabel.Text = "QEXOW CAM SYSTEM DASHBOARD";
             titleLabel.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
             titleLabel.ForeColor = Color.FromArgb(0, 162, 232);
             titleLabel.AutoSize = true;
             headerPanel.Controls.Add(titleLabel);
             statusForm.Controls.Add(headerPanel);
 
-            // Main Panel with Scroll
-            Panel mainPanel = new Panel();
-            mainPanel.Dock = DockStyle.Fill;
-            mainPanel.AutoScroll = true;
-            mainPanel.Padding = new Padding(20);
-            statusForm.Controls.Add(mainPanel);
-
-            grid = new TableLayoutPanel();
-            grid.ColumnCount = 4;
-            grid.Dock = DockStyle.Top;
-            grid.AutoSize = true;
-            grid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 35F));  // Light
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));  // Label
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));  // Detail
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100F)); // Action button
-            mainPanel.Controls.Add(grid);
-
-            // Bottom Panel
+            // Bottom Panel for Buttons
             Panel bottomPanel = new Panel();
             bottomPanel.Dock = DockStyle.Bottom;
             bottomPanel.Height = 55;
@@ -281,16 +265,20 @@ namespace CamTray
             bottomPanel.Padding = new Padding(15, 10, 15, 10);
 
             Button btnRefresh = new Button();
-            btnRefresh.Text = "Refresh";
+            btnRefresh.Text = "Refresh All";
             btnRefresh.FlatStyle = FlatStyle.Flat;
             btnRefresh.FlatAppearance.BorderSize = 0;
             btnRefresh.BackColor = Color.FromArgb(0, 120, 215);
             btnRefresh.ForeColor = Color.White;
             btnRefresh.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            btnRefresh.Width = 90;
+            btnRefresh.Width = 110;
             btnRefresh.Height = 35;
             btnRefresh.Dock = DockStyle.Left;
-            btnRefresh.Click += (s, ev) => RefreshStatusList();
+            btnRefresh.Click += (s, ev) => {
+                RefreshStatusList();
+                RefreshAgentMappingsList();
+                RefreshLogReadout();
+            };
             btnRefresh.MouseEnter += (s, ev) => btnRefresh.BackColor = Color.FromArgb(0, 140, 240);
             btnRefresh.MouseLeave += (s, ev) => btnRefresh.BackColor = Color.FromArgb(0, 120, 215);
             bottomPanel.Controls.Add(btnRefresh);
@@ -311,8 +299,113 @@ namespace CamTray
 
             statusForm.Controls.Add(bottomPanel);
 
+            // Outer SplitContainer splitting Top (checklist/mappings) and Bottom (logs)
+            SplitContainer outerSplit = new SplitContainer();
+            outerSplit.Dock = DockStyle.Fill;
+            outerSplit.Orientation = Orientation.Horizontal;
+            outerSplit.SplitterDistance = 430;
+            outerSplit.Panel2MinSize = 150;
+            outerSplit.Panel1MinSize = 200;
+            outerSplit.BackColor = Color.FromArgb(20, 20, 30);
+            statusForm.Controls.Add(outerSplit);
+
+            // Inner SplitContainer splitting Left (checklist) and Right (mappings)
+            SplitContainer innerSplit = new SplitContainer();
+            innerSplit.Dock = DockStyle.Fill;
+            innerSplit.Orientation = Orientation.Vertical;
+            innerSplit.SplitterDistance = 530;
+            innerSplit.Panel1MinSize = 250;
+            innerSplit.Panel2MinSize = 250;
+            innerSplit.BackColor = Color.FromArgb(20, 20, 30);
+            outerSplit.Panel1.Controls.Add(innerSplit);
+
+            // Left Panel: System Status Checklist
+            Panel leftPanel = new Panel();
+            leftPanel.Dock = DockStyle.Fill;
+            leftPanel.Padding = new Padding(15);
+            innerSplit.Panel1.Controls.Add(leftPanel);
+
+            Label lblStatusTitle = new Label();
+            lblStatusTitle.Text = "SYSTEM COMPONENT CHECKLIST";
+            lblStatusTitle.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
+            lblStatusTitle.ForeColor = Color.FromArgb(180, 180, 200);
+            lblStatusTitle.Dock = DockStyle.Top;
+            lblStatusTitle.Height = 30;
+            leftPanel.Controls.Add(lblStatusTitle);
+
+            Panel leftScroll = new Panel();
+            leftScroll.Dock = DockStyle.Fill;
+            leftScroll.AutoScroll = true;
+            leftPanel.Controls.Add(leftScroll);
+
+            grid = new TableLayoutPanel();
+            grid.ColumnCount = 4;
+            grid.Dock = DockStyle.Top;
+            grid.AutoSize = true;
+            grid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30F));  // Light
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45F));  // Label
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55F));  // Detail
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 85F));  // Action button
+            leftScroll.Controls.Add(grid);
+
+            // Right Panel: Agent Mappings
+            Panel rightPanel = new Panel();
+            rightPanel.Dock = DockStyle.Fill;
+            rightPanel.Padding = new Padding(15);
+            innerSplit.Panel2.Controls.Add(rightPanel);
+
+            Label lblMappingsTitle = new Label();
+            lblMappingsTitle.Text = "AGENT CHAT SESSION MAPPINGS";
+            lblMappingsTitle.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
+            lblMappingsTitle.ForeColor = Color.FromArgb(180, 180, 200);
+            lblMappingsTitle.Dock = DockStyle.Top;
+            lblMappingsTitle.Height = 30;
+            rightPanel.Controls.Add(lblMappingsTitle);
+
+            Panel rightScroll = new Panel();
+            rightScroll.Dock = DockStyle.Fill;
+            rightScroll.AutoScroll = true;
+            rightPanel.Controls.Add(rightScroll);
+
+            mappingsGrid = new TableLayoutPanel();
+            mappingsGrid.ColumnCount = 3;
+            mappingsGrid.Dock = DockStyle.Top;
+            mappingsGrid.AutoSize = true;
+            mappingsGrid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            mappingsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F)); // Agent Name
+            mappingsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65F)); // Conversation ID
+            mappingsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 85F)); // Test button
+            rightScroll.Controls.Add(mappingsGrid);
+
+            // Bottom Panel: Log Readout
+            Panel logsPanel = new Panel();
+            logsPanel.Dock = DockStyle.Fill;
+            logsPanel.Padding = new Padding(15, 5, 15, 10);
+            outerSplit.Panel2.Controls.Add(logsPanel);
+
+            Label lblLogTitle = new Label();
+            lblLogTitle.Text = "LIVE CAM LOG READOUT (LAST 40 LINES)";
+            lblLogTitle.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            lblLogTitle.ForeColor = Color.FromArgb(180, 180, 200);
+            lblLogTitle.Dock = DockStyle.Top;
+            lblLogTitle.Height = 25;
+            logsPanel.Controls.Add(lblLogTitle);
+
+            txtLogReadout = new TextBox();
+            txtLogReadout.Multiline = true;
+            txtLogReadout.ReadOnly = true;
+            txtLogReadout.ScrollBars = ScrollBars.Vertical;
+            txtLogReadout.BackColor = Color.FromArgb(10, 10, 15);
+            txtLogReadout.ForeColor = Color.LightGreen;
+            txtLogReadout.Font = new Font("Consolas", 8.5f);
+            txtLogReadout.Dock = DockStyle.Fill;
+            logsPanel.Controls.Add(txtLogReadout);
+
             // Initial Load
             RefreshStatusList();
+            RefreshAgentMappingsList();
+            RefreshLogReadout();
 
             statusForm.ShowDialog();
         }
@@ -323,11 +416,40 @@ namespace CamTray
             grid.RowStyles.Clear();
             grid.RowCount = 0;
 
-            string output = RunCamCommand("doctor");
-            string raw = string.IsNullOrWhiteSpace(output) ? "" : output;
+            var items = new List<StatusItem>();
+
+            // 1. Antigravity Desktop App installed
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string agyAppDir = Path.Combine(localAppData, "Programs", "Antigravity");
+            string agyAppExe = Path.Combine(agyAppDir, "Antigravity.exe");
+            string agyLangSrv = Path.Combine(agyAppDir, "resources", "bin", "language_server.exe");
+
+            bool hasAgyApp = Directory.Exists(agyAppDir);
+            bool hasAgyExe = File.Exists(agyAppExe);
+            bool hasAgyLangSrv = File.Exists(agyLangSrv);
+
+            items.Add(new StatusItem { Ok = hasAgyApp, Label = "Antigravity Desktop App installed", Detail = hasAgyApp ? agyAppDir : "not found" });
+            items.Add(new StatusItem { Ok = hasAgyExe, Label = "Antigravity Desktop App exe", Detail = hasAgyExe ? agyAppExe : "not found" });
+            items.Add(new StatusItem { Ok = hasAgyLangSrv, Label = "Antigravity Language Server (agy)", Detail = hasAgyLangSrv ? agyLangSrv : "not found" });
+
+            // 2. agy CLI in PATH
+            string agyVer = RunAgyCommand("--version").Trim();
+            bool hasAgyVer = !agyVer.StartsWith("failed") && !agyVer.Contains("timed out") && !string.IsNullOrWhiteSpace(agyVer);
+            items.Add(new StatusItem { Ok = hasAgyVer, Label = "agy CLI in PATH", Detail = hasAgyVer ? agyVer : "NOT found — install Antigravity Desktop App" });
+
+            // 3. Antigravity auth
+            string agyStatus = RunAgyCommand("status").Trim();
+            bool agyLoggedIn = hasAgyVer && !agyStatus.ToLower().Contains("unauthenticated") 
+                                         && !agyStatus.ToLower().Contains("login required") 
+                                         && !agyStatus.ToLower().Contains("not logged")
+                                         && !agyStatus.StartsWith("failed");
+            items.Add(new StatusItem { Ok = agyLoggedIn, Label = "Antigravity auth (agy status)", Detail = hasAgyVer ? (agyLoggedIn ? agyStatus.Split('\n')[0].Trim() : "NOT logged in — click Login") : "agy CLI not available" });
+
+            // 4. Cascading CAM Doctor checks
+            string camDoc = RunCamCommand("doctor");
+            string raw = string.IsNullOrWhiteSpace(camDoc) ? "" : camDoc;
             string[] outputLines = raw.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
             
-            var items = new List<StatusItem>();
             foreach (string line in outputLines)
             {
                 if (line.StartsWith("OK ") || line.StartsWith("BAD"))
@@ -398,25 +520,85 @@ namespace CamTray
 
         private bool ShouldShowButton(string label, bool ok)
         {
+            if (label.Contains("Antigravity Desktop App")) return true;
+            if (label.Contains("Antigravity Language Server")) return !ok;
+            if (label.Contains("agy CLI in PATH")) return !ok;
+            if (label.Contains("Antigravity auth")) return !ok;
+            if (label.Contains("CAM daemon")) return true;
             if (label.Contains("Codex Desktop App")) return true;
             if (label.Contains("Codex CLI")) return true;
             if (label.Contains("Codex auth")) return !ok;
-            if (label.Contains("CAM daemon")) return true;
             return false;
         }
 
         private string GetButtonText(string label, bool ok)
         {
+            if (label.Contains("Antigravity Desktop App")) return ok ? "Open" : "Download";
+            if (label.Contains("Antigravity Language Server")) return "Download";
+            if (label.Contains("agy CLI in PATH")) return "Install";
+            if (label.Contains("Antigravity auth")) return "Login";
+            if (label.Contains("CAM daemon")) return ok ? "Stop" : "Start";
             if (label.Contains("Codex Desktop App")) return ok ? "Open" : "Download";
             if (label.Contains("Codex CLI")) return ok ? "Update" : "Install";
             if (label.Contains("Codex auth")) return "Login";
-            if (label.Contains("CAM daemon")) return ok ? "Stop" : "Start";
             return "Action";
         }
 
         private void HandleAction(string label, bool ok)
         {
-            if (label.Contains("Codex Desktop App"))
+            if (label.Contains("Antigravity Desktop App"))
+            {
+                if (ok)
+                {
+                    try
+                    {
+                        Process.Start("antigravity://");
+                    }
+                    catch
+                    {
+                        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                        string agyAppExe = Path.Combine(localAppData, "Programs", "Antigravity", "Antigravity.exe");
+                        if (File.Exists(agyAppExe)) Process.Start(agyAppExe);
+                        else Process.Start("https://antigravity.google/download");
+                    }
+                }
+                else
+                {
+                    Process.Start("https://antigravity.google/download");
+                }
+            }
+            else if (label.Contains("Antigravity Language Server") || label.Contains("agy CLI in PATH"))
+            {
+                if (label.Contains("agy CLI in PATH"))
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoExit -Command \"irm https://antigravity.google/cli/install.ps1 | iex\"")
+                    {
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Normal
+                    };
+                    try { Process.Start(psi); } catch (Exception ex) { MessageBox.Show("Failed to launch installer: " + ex.Message); }
+                }
+                else
+                {
+                    Process.Start("https://antigravity.google/download");
+                }
+            }
+            else if (label.Contains("Antigravity auth"))
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c agy login && pause")
+                {
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Normal
+                };
+                try { Process.Start(psi); } catch (Exception ex) { MessageBox.Show("Failed to launch login: " + ex.Message); }
+            }
+            else if (label.Contains("CAM daemon"))
+            {
+                if (ok) RunCamCommand("daemon stop");
+                else RunCamCommand("daemon start");
+                RefreshStatusList();
+            }
+            else if (label.Contains("Codex Desktop App"))
             {
                 if (ok)
                 {
@@ -455,20 +637,290 @@ namespace CamTray
                 };
                 try { Process.Start(psi); } catch (Exception ex) { MessageBox.Show("Failed to launch login: " + ex.Message); }
             }
-            else if (label.Contains("CAM daemon"))
+        }
+
+        private void RefreshAgentMappingsList()
+        {
+            mappingsGrid.Controls.Clear();
+            mappingsGrid.RowStyles.Clear();
+            mappingsGrid.RowCount = 0;
+
+            var mappings = GetAgentMappings();
+            int rowIdx = 0;
+
+            if (mappings.Count == 0)
             {
-                if (ok)
-                {
-                    RunCamCommand("daemon stop");
-                }
-                else
-                {
-                    RunCamCommand("daemon start");
-                }
-                RefreshStatusList();
+                mappingsGrid.RowCount++;
+                mappingsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 35F));
+
+                Label lblNoMappings = new Label();
+                lblNoMappings.Text = "No active agent mappings found.";
+                lblNoMappings.Font = new Font("Segoe UI", 9.5f, FontStyle.Italic);
+                lblNoMappings.ForeColor = Color.DarkGray;
+                lblNoMappings.TextAlign = ContentAlignment.MiddleLeft;
+                lblNoMappings.Dock = DockStyle.Fill;
+                
+                mappingsGrid.Controls.Add(lblNoMappings, 0, rowIdx);
+                mappingsGrid.SetColumnSpan(lblNoMappings, 3);
+                return;
+            }
+
+            foreach (var kvp in mappings)
+            {
+                string agentName = kvp.Key;
+                string conversationId = kvp.Value;
+
+                mappingsGrid.RowCount++;
+                mappingsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 35F));
+
+                // 1. Agent Name
+                Label lblName = new Label();
+                lblName.Text = agentName;
+                lblName.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+                lblName.ForeColor = Color.FromArgb(0, 162, 232);
+                lblName.TextAlign = ContentAlignment.MiddleLeft;
+                lblName.Dock = DockStyle.Fill;
+                mappingsGrid.Controls.Add(lblName, 0, rowIdx);
+
+                // 2. Conversation ID
+                Label lblId = new Label();
+                lblId.Text = conversationId;
+                lblId.Font = new Font("Consolas", 9f);
+                lblId.ForeColor = Color.LightGray;
+                lblId.TextAlign = ContentAlignment.MiddleLeft;
+                lblId.Dock = DockStyle.Fill;
+                
+                ToolTip toolTip = new ToolTip();
+                toolTip.SetToolTip(lblId, conversationId);
+                
+                mappingsGrid.Controls.Add(lblId, 1, rowIdx);
+
+                // 3. Test Button
+                Button btnTest = new Button();
+                btnTest.Text = "Test";
+                btnTest.FlatStyle = FlatStyle.Flat;
+                btnTest.FlatAppearance.BorderSize = 0;
+                btnTest.BackColor = Color.FromArgb(0, 122, 204);
+                btnTest.ForeColor = Color.White;
+                btnTest.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+                btnTest.Height = 25;
+                btnTest.Dock = DockStyle.Fill;
+                btnTest.Click += (s, ev) => RunStatusTest(agentName, conversationId, btnTest);
+                btnTest.MouseEnter += (s, ev) => { if (btnTest.Enabled) btnTest.BackColor = Color.FromArgb(28, 151, 234); };
+                btnTest.MouseLeave += (s, ev) => { if (btnTest.Enabled) btnTest.BackColor = Color.FromArgb(0, 122, 204); };
+                
+                mappingsGrid.Controls.Add(btnTest, 2, rowIdx);
+
+                rowIdx++;
             }
         }
 
+        private void RefreshLogReadout()
+        {
+            try
+            {
+                string camDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".qexow-cam");
+                string logFile = Path.Combine(camDir, "daemon.jsonl");
+                if (File.Exists(logFile))
+                {
+                    using (var fs = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        long size = fs.Length;
+                        long start = Math.Max(0, size - 40000); // last ~40KB
+                        fs.Seek(start, SeekOrigin.Begin);
+                        using (var reader = new StreamReader(fs))
+                        {
+                            string raw = reader.ReadToEnd();
+                            string[] lines = raw.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                            int skip = Math.Max(0, lines.Length - 40);
+                            string display = string.Join(Environment.NewLine, lines.Skip(skip));
+                            txtLogReadout.Text = display;
+                            txtLogReadout.SelectionStart = txtLogReadout.Text.Length;
+                            txtLogReadout.ScrollToCaret();
+                        }
+                    }
+                }
+                else
+                {
+                    txtLogReadout.Text = "No logs generated yet. Ensure the daemon is running.";
+                }
+            }
+            catch (Exception ex)
+            {
+                txtLogReadout.Text = "Error reading logs: " + ex.Message;
+            }
+        }
+
+        private Dictionary<string, string> GetAgentMappings()
+        {
+            var mappings = new Dictionary<string, string>();
+            try
+            {
+                string agentsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".qexow-cam", "agents.json");
+                if (File.Exists(agentsFile))
+                {
+                    string content = File.ReadAllText(agentsFile);
+                    int startIdx = content.IndexOf("\"agents\":");
+                    if (startIdx >= 0)
+                    {
+                        int openBrace = content.IndexOf("{", startIdx);
+                        int braceCount = 1;
+                        int endIdx = -1;
+                        for (int i = openBrace + 1; i < content.Length; i++)
+                        {
+                            if (content[i] == '{') braceCount++;
+                            else if (content[i] == '}') braceCount--;
+                            if (braceCount == 0)
+                            {
+                                endIdx = i;
+                                break;
+                            }
+                        }
+                        
+                        if (openBrace >= 0 && endIdx > openBrace)
+                        {
+                            string section = content.Substring(openBrace, endIdx - openBrace + 1);
+                            var jsonObject = parseSimpleJson(section);
+                            foreach (var agentName in jsonObject.Keys)
+                            {
+                                var agentProps = parseSimpleJson(jsonObject[agentName]);
+                                if (agentProps.ContainsKey("threadId") && !string.IsNullOrEmpty(agentProps["threadId"]))
+                                {
+                                    mappings[agentName] = agentProps["threadId"].Trim('"');
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+            return mappings;
+        }
+        
+        // Very basic JSON parser just to extract agent threadIds
+        private Dictionary<string, string> parseSimpleJson(string json)
+        {
+            var result = new Dictionary<string, string>();
+            bool inString = false;
+            int depth = 0;
+            int lastStart = -1;
+            string currentKey = null;
+            
+            for (int i = 0; i < json.Length; i++)
+            {
+                if (json[i] == '"' && (i == 0 || json[i-1] != '\\'))
+                {
+                    inString = !inString;
+                }
+                
+                if (!inString)
+                {
+                    if (json[i] == '{') depth++;
+                    else if (json[i] == '}') depth--;
+                    
+                    if (depth == 1 && json[i] == ':')
+                    {
+                        if (lastStart >= 0)
+                        {
+                            currentKey = json.Substring(lastStart, i - lastStart).Trim(' ', '\n', '\r', '"');
+                            lastStart = i + 1;
+                        }
+                    }
+                    else if (depth == 1 && json[i] == ',')
+                    {
+                        if (currentKey != null && lastStart >= 0)
+                        {
+                            result[currentKey] = json.Substring(lastStart, i - lastStart).Trim();
+                            currentKey = null;
+                        }
+                        lastStart = i + 1;
+                    }
+                    else if (depth == 0 && json[i] == '}')
+                    {
+                        if (currentKey != null && lastStart >= 0)
+                        {
+                            result[currentKey] = json.Substring(lastStart, i - lastStart).Trim();
+                        }
+                    }
+                }
+                else if (lastStart == -1 && json[i] == '"')
+                {
+                    lastStart = i;
+                }
+            }
+            return result;
+        }
+
+        private async void RunStatusTest(string agentName, string conversationId, Button btnTest)
+        {
+            btnTest.Enabled = false;
+            btnTest.Text = "Testing...";
+            btnTest.BackColor = Color.Orange;
+
+            try
+            {
+                string output = RunCamCommand("send " + agentName + " \"what is your status\"");
+                if (output.Contains("Error"))
+                {
+                    btnTest.Text = "Failed!";
+                    btnTest.BackColor = Color.Red;
+                }
+                else
+                {
+                    btnTest.Text = "Success!";
+                    btnTest.BackColor = Color.LimeGreen;
+                }
+            }
+            catch
+            {
+                btnTest.Text = "Failed!";
+                btnTest.BackColor = Color.Red;
+            }
+
+            await System.Threading.Tasks.Task.Delay(3000);
+            
+            if (btnTest != null && !btnTest.IsDisposed)
+            {
+                btnTest.Text = "Test";
+                btnTest.BackColor = Color.FromArgb(0, 122, 204);
+                btnTest.Enabled = true;
+            }
+        }
+
+        private string RunAgyCommand(string arguments)
+        {
+            try
+            {
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string agyExe = Path.Combine(localAppData, "Programs", "Antigravity", "resources", "bin", "language_server.exe");
+                
+                if (!File.Exists(agyExe)) return "failed: agy not found";
+
+                ProcessStartInfo processInfo = new ProcessStartInfo(agyExe, arguments)
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                using (Process process = Process.Start(processInfo))
+                {
+                    if (!process.WaitForExit(5000))
+                    {
+                        process.Kill();
+                        return "failed: timed out";
+                    }
+                    string output = process.StandardOutput.ReadToEnd();
+                    return string.IsNullOrWhiteSpace(output) ? process.StandardError.ReadToEnd() : output;
+                }
+            }
+            catch (Exception ex)
+            {
+                return "failed: " + ex.Message;
+            }
+        }
 
         private void Start_Click(object sender, EventArgs e)
         {

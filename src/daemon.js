@@ -22,6 +22,7 @@ import {
   upsertAgent,
 } from "./registry.js";
 import { appendJsonl, paths, writeJsonAtomic, readJson } from "./paths.js";
+import { bootstrapAntigravity, runAgyCommand, pollAgyTranscript } from "./antigravity.js";
 
 export function showWindowsAlert(title, message, iconType = "error") {
   if (process.platform !== "win32") return;
@@ -265,6 +266,9 @@ export class AgentManagerDaemon {
         throw new Error(`Port ${port} is already in use. Startup aborted by user.`);
       }
     }
+
+    // Initialize Native Antigravity Integration
+    bootstrapAntigravity((type, payload) => this.log(type, payload));
 
     await this.appServer.start();
     for (const agent of listAgents(this.config)) {
@@ -936,6 +940,44 @@ export class AgentManagerDaemon {
       if (existingMessage) {
         markMailboxSurfaced([message.messageId], null);
       }
+
+      // Native Antigravity Integration: Actively forward the message to the language server
+      // and wait for a response to route back.
+      this.log("antigravity.native.routing", { messageId: message.messageId, targetAgent });
+      
+      (async () => {
+        try {
+          const conversationId = targetAgentObj.threadId;
+          const logDir = path.join(os.homedir(), ".gemini", "antigravity", "brain", conversationId, ".system_generated", "logs");
+          const logFile = path.join(logDir, "transcript.jsonl");
+          let startByte = 0;
+          if (fs.existsSync(logFile)) {
+            startByte = fs.statSync(logFile).size;
+          }
+
+          // Send message to language server
+          await runAgyCommand(["send-message", conversationId, message.body], (t, p) => this.log(t, p));
+          
+          // Wait for reply via transcript
+          const replyText = await pollAgyTranscript(conversationId, startByte, (t, p) => this.log(t, p));
+          
+          // Route response back natively via internal loop
+          this.log("antigravity.native.response_received", { conversationId, replyText });
+          await this.#sendMessage({
+            targetAgent: message.sourceAgent,
+            message: replyText,
+            sourceAgent: targetAgent,
+            sourceNode: this.config.nodeName,
+          });
+          
+        } catch (nativeErr) {
+          this.log("antigravity.native.error", { messageId: message.messageId, targetAgent, error: nativeErr.message });
+        } finally {
+          setAgent(this.config, targetAgent, { status: "idle" });
+          this.#checkInboxListeners();
+        }
+      })();
+
       return { delivered: true, queued: false, message };
     }
 
