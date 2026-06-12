@@ -1,6 +1,6 @@
 {
   "name": "qexow-cam",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "private": true,
   "description": "Qexow CAM — local agent registry and message bus.",
   "type": "module",
