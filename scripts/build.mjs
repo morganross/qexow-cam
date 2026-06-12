@@ -34,6 +34,16 @@ function run(cmd, opts = {}) {
   }
 }
 
+// ── Step 0: Pre-compile remote query scripts into JS strings ─────────────────
+console.log("\n[BUILD] Step 0: Compiling remote query scripts...");
+const pyScript = fs.readFileSync(path.join(ROOT, "src", "remote_query_threads.py"), "utf8");
+const jsScript = fs.readFileSync(path.join(ROOT, "src", "remote_query_threads.js"), "utf8");
+const remoteScriptsJs = `// Auto-generated during build. Do not edit.
+export const pyRemoteScript = ${JSON.stringify(pyScript)};
+export const jsRemoteScript = ${JSON.stringify(jsScript)};
+`;
+fs.writeFileSync(path.join(ROOT, "src", "remote_scripts.js"), remoteScriptsJs);
+
 // ── Step 1: Bundle with esbuild into a single CJS file ──────────────────────
 console.log("\n[BUILD] Step 1: Bundling with esbuild...");
 run(`npx esbuild bin/cam.js --bundle --platform=node --format=cjs --outfile=dist/cam-bundle.cjs --external:fsevents`);

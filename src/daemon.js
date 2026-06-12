@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
 import net from "node:net";
 import { AppServerClient, textInput } from "./app-server.js";
+import { pyRemoteScript, jsRemoteScript } from "./remote_scripts.js";
 import { ensureLocalToken, loadConfig } from "./config.js";
 import {
   appendEvent,
@@ -202,10 +203,9 @@ export class AgentManagerDaemon {
     this.ensuringThreads = new Map();
     this.mailboxListeners = [];
 
-    // Load remote query scripts
-    const srcDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
-    this.pyRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.py"), "utf8");
-    this.jsRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.js"), "utf8");
+    // Load remote query scripts (bundled via esbuild)
+    this.pyRemoteScript = pyRemoteScript;
+    this.jsRemoteScript = jsRemoteScript;
   }
 
   queueMessage(message) {

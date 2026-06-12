@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import crypto from "node:crypto";
+import { pyRemoteScript, jsRemoteScript } from "./remote_scripts.js";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -726,10 +728,7 @@ function listPeerAgents(peer) {
     }
   }
 
-  // Load scripts
-  const srcDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
-  const pyRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.py"), "utf8");
-  const jsRemoteScript = fs.readFileSync(path.join(srcDir, "remote_query_threads.js"), "utf8");
+  // Scripts are now imported from remote_scripts.js
 
   // Stage 3: Python direct query
   if (!successStrategy) {
