@@ -301,23 +301,23 @@ namespace CamTray
 
             // Outer SplitContainer splitting Top (checklist/mappings) and Bottom (logs)
             SplitContainer outerSplit = new SplitContainer();
+            statusForm.Controls.Add(outerSplit);
             outerSplit.Dock = DockStyle.Fill;
             outerSplit.Orientation = Orientation.Horizontal;
             outerSplit.SplitterDistance = 430;
             outerSplit.Panel2MinSize = 150;
             outerSplit.Panel1MinSize = 200;
             outerSplit.BackColor = Color.FromArgb(20, 20, 30);
-            statusForm.Controls.Add(outerSplit);
 
             // Inner SplitContainer splitting Left (checklist) and Right (mappings)
             SplitContainer innerSplit = new SplitContainer();
+            outerSplit.Panel1.Controls.Add(innerSplit);
             innerSplit.Dock = DockStyle.Fill;
             innerSplit.Orientation = Orientation.Vertical;
             innerSplit.SplitterDistance = 530;
             innerSplit.Panel1MinSize = 250;
             innerSplit.Panel2MinSize = 250;
             innerSplit.BackColor = Color.FromArgb(20, 20, 30);
-            outerSplit.Panel1.Controls.Add(innerSplit);
 
             // Left Panel: System Status Checklist
             Panel leftPanel = new Panel();

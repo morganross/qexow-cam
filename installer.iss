@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.0.0
+AppVersion=2.0.1
 DefaultDirName={pf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
