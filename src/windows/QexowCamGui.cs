@@ -332,7 +332,9 @@ namespace QexowCamGui
             if (string.IsNullOrWhiteSpace(agentName)) return;
 
             testButton.Enabled = false;
-            outputBox.Text = AppendLine(outputBox.Text, "Sending test message to " + agentName + "...");
+            testButton.Text = "Testing...";
+            outputBox.Text = AppendLine(outputBox.Text, "TEST START  target=" + agentName);
+            outputBox.Text = AppendLine(outputBox.Text, "STATE send  sending test message...");
             log("test-start agent=" + agentName);
 
             ThreadPool.QueueUserWorkItem(delegate
@@ -350,17 +352,18 @@ namespace QexowCamGui
                     string turnId = NestedValue(sendResult, "message", "turnId");
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "Message sent. Awaiting/recording response path...");
-                        outputBox.Text = AppendLine(outputBox.Text, "Delivery accepted. turnId=" + turnId + " testId=" + correlationId);
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE sent  delivery accepted");
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE wait  turnId=" + turnId + " testId=" + correlationId);
                     });
 
                     string response = WaitForAgentResponse(agentName, correlationId, turnId, 90000);
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "Agent response from " + agentName + ":");
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE done  agent response received from " + agentName);
                         outputBox.Text = AppendLine(outputBox.Text, response);
-                        MessageBox.Show(this, response, "Qexow CAM agent response", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        outputBox.Text = AppendLine(outputBox.Text, "TEST PASS");
                         testButton.Enabled = true;
+                        testButton.Text = "Test Selected Agent";
                     });
                     log("test-ok agent=" + agentName);
                 }
@@ -368,9 +371,10 @@ namespace QexowCamGui
                 {
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "Test failed: " + ex.Message);
-                        MessageBox.Show(this, ex.Message, "Qexow CAM test failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE fail  " + ex.Message);
+                        outputBox.Text = AppendLine(outputBox.Text, "TEST FAIL");
                         testButton.Enabled = true;
+                        testButton.Text = "Test Selected Agent";
                     });
                     log("test-error agent=" + agentName + " error=" + ex.Message);
                 }
@@ -381,29 +385,40 @@ namespace QexowCamGui
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             string lastSummary = "";
-            int nextStatusAt = 10000;
+            int pollCount = 0;
+            string[] spinner = new string[] { "-", "\\", "|", "/" };
             while (stopwatch.ElapsedMilliseconds < timeoutMs)
             {
+                pollCount++;
                 try
                 {
+                    int elapsedSeconds = (int)(stopwatch.ElapsedMilliseconds / 1000);
+                    string mark = spinner[pollCount % spinner.Length];
+                    InvokeUi(delegate
+                    {
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading " + agentName + " thread...");
+                    });
+
                     Dictionary<string, object> readResult = ApiGet("/agents/read?name=" + Uri.EscapeDataString(agentName) + "&includeTurns=true&turns=8");
                     string response = FindAgentResponse(readResult, correlationId, turnId);
                     if (!String.IsNullOrWhiteSpace(response)) return response;
                     lastSummary = SummarizeLatestAgentMessage(readResult);
+                    if (!String.IsNullOrWhiteSpace(lastSummary))
+                    {
+                        string summaryForUi = lastSummary.Length > 120 ? lastSummary.Substring(0, 120) : lastSummary;
+                        InvokeUi(delegate
+                        {
+                            outputBox.Text = AppendLine(outputBox.Text, "STATE seen  latest agent text does not match this test yet: " + summaryForUi);
+                        });
+                    }
                 }
                 catch (Exception ex)
                 {
                     lastSummary = "read error: " + ex.Message;
-                }
-
-                if (stopwatch.ElapsedMilliseconds >= nextStatusAt)
-                {
-                    int elapsedSeconds = (int)(stopwatch.ElapsedMilliseconds / 1000);
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "Still waiting for " + agentName + " response... " + elapsedSeconds + "s");
+                        outputBox.Text = AppendLine(outputBox.Text, "STATE read-error  " + ex.Message);
                     });
-                    nextStatusAt += 10000;
                 }
                 Thread.Sleep(2000);
             }
