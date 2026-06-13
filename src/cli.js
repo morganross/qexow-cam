@@ -27,7 +27,7 @@ function usage() {
   cam agent list
   cam agent status <name>
   cam agent read <name> [--latest]
-  cam send <agent-name> <message> [--from <agent-name>]
+  cam send <agent-name> <message> [--from <agent-name>] [--correlation-id <id>] [--message-type <type>] [--strict]
   cam inbox [agent-name]
   cam logs
   cam install-service
@@ -448,6 +448,9 @@ async function commandSend(args) {
     sourceAgent: opts.from || "operator",
     sourceNode: opts.sourceNode || os.hostname(),
   };
+  if (opts.correlationId) payload.correlationId = opts.correlationId;
+  if (opts.messageType) payload.messageType = opts.messageType;
+  if (opts.strict) payload.strict = true;
   try {
     const result = await apiRequest("POST", "/send", payload);
     console.log(JSON.stringify(result.message, null, 2));

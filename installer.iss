@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.22
+AppVersion=2.1.23
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -124,6 +124,54 @@ begin
   end;
 end;
 
+procedure RotateIfExists(PathName: string; BackupDir: string; Stamp: string);
+var
+  Dest: string;
+begin
+  if FileExists(PathName) then begin
+    if not DirExists(BackupDir) then begin
+      ForceDirectories(BackupDir);
+    end;
+    Dest := BackupDir + '\' + ExtractFileName(PathName) + '.bak-' + Stamp;
+    RenameFile(PathName, Dest);
+  end;
+end;
+
+procedure RotateDirIfExists(PathName: string; BackupDir: string; Stamp: string);
+var
+  Dest: string;
+begin
+  if DirExists(PathName) then begin
+    if not DirExists(BackupDir) then begin
+      ForceDirectories(BackupDir);
+    end;
+    Dest := BackupDir + '\' + ExtractFileName(PathName) + '.bak-' + Stamp;
+    RenameFile(PathName, Dest);
+  end;
+end;
+
+procedure ResetVolatileCamState();
+var
+  CamHome: string;
+  BackupDir: string;
+  Stamp: string;
+begin
+  CamHome := ExpandConstant('{userprofile}\.qexow-cam');
+  Stamp := GetDateTimeString('yyyymmddhhnnss', '', '');
+  BackupDir := CamHome + '\install-backups\' + Stamp;
+
+  // Preserve durable config/secrets/boss notes. Rotate volatile runtime state.
+  RotateIfExists(CamHome + '\agents.json', BackupDir, Stamp);
+  RotateIfExists(CamHome + '\mailbox.jsonl', BackupDir, Stamp);
+  RotateIfExists(CamHome + '\events.jsonl', BackupDir, Stamp);
+  RotateDirIfExists(CamHome + '\logs', BackupDir, Stamp);
+
+  DeleteIfExists(CamHome + '\daemon.pid');
+  DeleteIfExists(CamHome + '\daemon.json');
+  DeleteIfExists(CamHome + '\tray.lock');
+  DeleteIfExists(CamHome + '\service.json');
+end;
+
 function IsHeadlessInstall(): Boolean;
 var
   i: Integer;
@@ -155,6 +203,7 @@ begin
   DeleteIfExists(ExpandConstant('{userstartup}\CodexAgentManager.cmd'));
   DeleteIfExists(ExpandConstant('{userstartup}\QexowCam.cmd'));
   DeleteIfExists(ExpandConstant('{userstartup}\Codex Agent Manager.cmd'));
+  ResetVolatileCamState();
 
   Result := True;
 end;

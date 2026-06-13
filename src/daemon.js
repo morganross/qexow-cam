@@ -34,6 +34,8 @@ import { bootstrapAntigravity } from "./antigravity.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
+const CAM_VERSION = "2.1.23";
+const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 
 export function showWindowsAlert(title, message, iconType = "error") {
   // Completely disabled by Security Block 5: Eradication of External Scripts
@@ -446,6 +448,7 @@ export class AgentManagerDaemon {
       if (req.url === "/health" && req.method === "GET") {
         return json(res, 200, {
           ok: true,
+          version: CAM_VERSION,
           nodeName: this.config.nodeName,
           startedAt: this.startedAt,
           appServerInitialized: this.appServer.initialized,
@@ -599,10 +602,8 @@ export class AgentManagerDaemon {
       }
       if (url.pathname === "/send" && req.method === "POST") {
         const body = await readBody(req);
-        const targetAgent = body.targetAgent;
-        const target = getAgent(this.config, targetAgent);
         const result = await this.#sendMessage(body);
-        return json(res, 200, { ok: true, ...result });
+        return json(res, 200, { ok: result.ok !== false, ...result });
       }
       if (url.pathname === "/inbox" && req.method === "GET") {
         const agent = url.searchParams.get("agent");
@@ -680,7 +681,7 @@ export class AgentManagerDaemon {
     return header === `Bearer ${this.token}`;
   }
 
-  async #ensureThread(name) {
+  async #ensureThread(name, options = {}) {
     if (this.ensuringThreads.has(name)) {
       return this.ensuringThreads.get(name);
     }
@@ -713,6 +714,10 @@ export class AgentManagerDaemon {
           return agent;
         } catch (error) {
           this.log("thread.resume.failed", { agent: name, threadId: agent.threadId, error: error.message });
+          if (options.strict && STRICT_THREAD_NOT_FOUND.test(error.message)) {
+            setAgent(this.config, name, { status: "stale", activeTurnId: null, lastError: error.message });
+            throw error;
+          }
         }
       }
       const created = await this.#startThread(agent);
@@ -997,6 +1002,8 @@ export class AgentManagerDaemon {
     
     const targetAgent = existingMessage ? existingMessage.targetAgent : body.targetAgent;
     const targetAgentObj = getAgent(this.config, targetAgent);
+    const strict = !existingMessage && body?.strict === true;
+    const messageType = existingMessage ? existingMessage.messageType : (body?.messageType || null);
 
     if ((targetAgentObj && MAILBOX_ONLY_THREAD_SOURCES.has(targetAgentObj.threadSource)) || (!targetAgentObj && (targetAgent === "operator" || targetAgent === "windows-gui"))) {
       const message = existingMessage || {
@@ -1008,6 +1015,7 @@ export class AgentManagerDaemon {
         targetNode: this.config.nodeName,
         timestamp: new Date().toISOString(),
         body: body?.message,
+        messageType,
         delivery: "queued",
       };
       message.delivery = "queued";
@@ -1022,6 +1030,10 @@ export class AgentManagerDaemon {
     }
 
     if (targetAgentObj && targetAgentObj.threadSource === "antigravity") {
+      if (strict) {
+        const message = this.#buildFailedMessage(body, targetAgent, "strict send cannot deliver to Antigravity mailbox-only agents");
+        return { ok: false, delivered: false, queued: false, error: message.error, message };
+      }
       const message = existingMessage || {
         messageId: crypto.randomUUID(),
         correlationId: body.correlationId || null,
@@ -1031,6 +1043,7 @@ export class AgentManagerDaemon {
         targetNode: targetAgentObj.node,
         timestamp: new Date().toISOString(),
         body: body.message,
+        messageType,
         delivery: "queued",
       };
       if (existingMessage) {
@@ -1050,9 +1063,21 @@ export class AgentManagerDaemon {
     }
 
     let target;
+    let resolveError = null;
     try {
-      target = await this.#ensureThread(targetAgent);
+      target = await this.#ensureThread(targetAgent, { strict });
     } catch (ensureErr) {
+      resolveError = ensureErr;
+      if (strict && STRICT_THREAD_NOT_FOUND.test(ensureErr.message)) {
+        target = await this.#repairStaleThreadAndEnsure(targetAgent, ensureErr);
+      }
+    }
+    if (!target) {
+      const ensureErr = resolveError || new Error(`unable to resolve target thread for ${targetAgent}`);
+      if (strict) {
+        const message = this.#buildFailedMessage(body, targetAgent, ensureErr.message);
+        return { ok: false, delivered: false, queued: false, error: message.error, message };
+      }
       const message = existingMessage || {
         messageId: crypto.randomUUID(),
         correlationId: body?.correlationId || null,
@@ -1062,6 +1087,7 @@ export class AgentManagerDaemon {
         targetNode: null,
         timestamp: new Date().toISOString(),
         body: body?.message,
+        messageType,
         delivery: "queued",
       };
       message.delivery = "queued";
@@ -1095,6 +1121,7 @@ export class AgentManagerDaemon {
       targetNode: target.node,
       timestamp: new Date().toISOString(),
       body: body.message,
+      messageType,
       delivery: "pending",
     };
 
@@ -1117,6 +1144,8 @@ export class AgentManagerDaemon {
     const prompt = [
       "[Qexow CAM message]",
       `messageId: ${message.messageId}`,
+      `correlationId: ${message.correlationId || ""}`,
+      message.messageType ? `messageType: ${message.messageType}` : null,
       `sourceAgent: ${message.sourceAgent}`,
       `sourceNode: ${message.sourceNode}`,
       `targetAgent: ${message.targetAgent}`,
@@ -1124,8 +1153,8 @@ export class AgentManagerDaemon {
       message.body,
       pendingText,
       "",
-      `[To reply to this message, use the qexow-cam-messaging skill or send via CAM HTTP to targetAgent "${message.sourceAgent}". Do not use older codex-agent-manager paths.]`
-    ].join("\n");
+      `[To reply to this message, use the qexow-cam-messaging skill or send via CAM HTTP to targetAgent "${message.sourceAgent}" and include correlationId "${message.correlationId || ""}". Do not use older codex-agent-manager paths.]`
+    ].filter(Boolean).join("\n");
 
     try {
       if (target.activeTurnId) {
@@ -1159,6 +1188,15 @@ export class AgentManagerDaemon {
       appendEvent("message.delivered", message);
       return { delivered: true, queued: false, message };
     } catch (error) {
+      if (strict) {
+        if (STRICT_THREAD_NOT_FOUND.test(error.message)) {
+          setAgent(this.config, targetAgent, { status: "stale", activeTurnId: null, lastError: error.message });
+        }
+        message.delivery = "failed";
+        message.error = error.message;
+        appendEvent("message.failed.strict", message);
+        return { ok: false, delivered: false, queued: false, error: error.message, message };
+      }
       message.delivery = "queued";
       message.error = error.message;
       if (!existingMessage) {
@@ -1179,6 +1217,50 @@ export class AgentManagerDaemon {
         }
       }
       return { delivered: false, queued: true, message };
+    }
+  }
+
+  #buildFailedMessage(body, targetAgent, error) {
+    return {
+      messageId: crypto.randomUUID(),
+      correlationId: body?.correlationId || null,
+      sourceAgent: body?.sourceAgent || "operator",
+      targetAgent,
+      sourceNode: body?.sourceNode || this.config.nodeName,
+      targetNode: null,
+      timestamp: new Date().toISOString(),
+      body: body?.message || "",
+      messageType: body?.messageType || null,
+      delivery: "failed",
+      error,
+    };
+  }
+
+  async #repairStaleThreadAndEnsure(targetAgent, originalError) {
+    this.log("thread.repair.start", { agent: targetAgent, error: originalError.message });
+    await this.syncActiveThreads();
+    const refreshed = getAgent(this.config, targetAgent);
+    if (!refreshed || !refreshed.threadId) {
+      this.log("thread.repair.failed", { agent: targetAgent, error: "no refreshed threadId found" });
+      return null;
+    }
+    try {
+      const resumed = await this.appServer.request("thread/resume", {
+        threadId: refreshed.threadId,
+        cwd: refreshed.cwd,
+        excludeTurns: true,
+        persistExtendedHistory: false,
+      }, 60000);
+      this.threadToAgent.set(refreshed.threadId, refreshed.name);
+      const statusType = resumed.thread?.status?.type || "idle";
+      const changes = { status: statusType, lastError: null };
+      if (statusType !== "active") changes.activeTurnId = null;
+      this.log("thread.repair.ok", { agent: targetAgent, threadId: refreshed.threadId, statusType });
+      return setAgent(this.config, targetAgent, changes);
+    } catch (error) {
+      setAgent(this.config, targetAgent, { status: "stale", activeTurnId: null, lastError: error.message });
+      this.log("thread.repair.failed", { agent: targetAgent, threadId: refreshed.threadId, error: error.message });
+      return null;
     }
   }
 

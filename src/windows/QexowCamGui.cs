@@ -9,6 +9,11 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using System.Reflection;
+
+[assembly: AssemblyVersion("2.1.23.0")]
+[assembly: AssemblyFileVersion("2.1.23.0")]
+[assembly: AssemblyInformationalVersion("2.1.23")]
 
 namespace QexowCamGui
 {
@@ -133,7 +138,7 @@ namespace QexowCamGui
         public MainForm(Action<string> logger)
         {
             log = logger;
-            Text = "Qexow CAM Status";
+            Text = "Qexow CAM Status v" + CamPaths.Version;
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1100, 720);
             MinimumSize = new Size(840, 560);
@@ -156,7 +161,7 @@ namespace QexowCamGui
             root.Controls.Add(header, 0, 0);
 
             Label title = new Label();
-            title.Text = "Qexow CAM";
+            title.Text = "Qexow CAM v" + CamPaths.Version;
             title.Font = new Font("Segoe UI", 15.0f, FontStyle.Bold);
             title.AutoSize = true;
             title.Location = new Point(16, 12);
@@ -232,11 +237,12 @@ namespace QexowCamGui
                 {
                     Dictionary<string, object> health = ApiGet("/health");
                     object nodeName = health.ContainsKey("nodeName") ? health["nodeName"] : "";
+                    object version = health.ContainsKey("version") ? health["version"] : CamPaths.Version;
                     object startedAt = health.ContainsKey("startedAt") ? health["startedAt"] : "";
                     InvokeUi(delegate
                     {
                         daemonLight.BackColor = Color.LimeGreen;
-                        daemonLabel.Text = "Daemon online - node=" + nodeName + " started=" + startedAt;
+                        daemonLabel.Text = "Daemon online - version=" + version + " node=" + nodeName + " started=" + startedAt;
                     });
                     log("health-ok");
                 }
@@ -249,11 +255,12 @@ namespace QexowCamGui
                         {
                             Dictionary<string, object> retryHealth = ApiGet("/health");
                             object retryNodeName = retryHealth.ContainsKey("nodeName") ? retryHealth["nodeName"] : "";
+                            object retryVersion = retryHealth.ContainsKey("version") ? retryHealth["version"] : CamPaths.Version;
                             object retryStartedAt = retryHealth.ContainsKey("startedAt") ? retryHealth["startedAt"] : "";
                             InvokeUi(delegate
                             {
                                 daemonLight.BackColor = Color.LimeGreen;
-                                daemonLabel.Text = "Daemon online - node=" + retryNodeName + " started=" + retryStartedAt;
+                                daemonLabel.Text = "Daemon online - version=" + retryVersion + " node=" + retryNodeName + " started=" + retryStartedAt;
                             });
                             log("health-ok-after-daemon-start");
                             goto LoadAgentList;
@@ -333,6 +340,13 @@ namespace QexowCamGui
             }
             string agentName = Convert.ToString(agentsGrid.SelectedRows[0].Cells["name"].Value);
             if (string.IsNullOrWhiteSpace(agentName)) return;
+            string threadId = Convert.ToString(agentsGrid.SelectedRows[0].Cells["threadId"].Value);
+            string status = Convert.ToString(agentsGrid.SelectedRows[0].Cells["status"].Value);
+            if (String.IsNullOrWhiteSpace(threadId) || String.Equals(status, "stale", StringComparison.OrdinalIgnoreCase) || String.Equals(status, "unbound", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendOutput("TEST FAIL  selected agent is not testable: status=" + status + " threadId=" + threadId);
+                return;
+            }
 
             testButton.Enabled = false;
             testButton.Text = "Testing...";
@@ -350,13 +364,16 @@ namespace QexowCamGui
                     payload["sourceAgent"] = CamTestMailboxAgent;
                     payload["sourceNode"] = Environment.MachineName;
                     payload["correlationId"] = correlationId;
-                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". Reply by sending a CAM message to targetAgent \"" + CamTestMailboxAgent + "\". Do not only answer in this chat. Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
+                    payload["strict"] = true;
+                    payload["messageType"] = "cam-gui-test";
+                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". You must reply by sending a Qexow CAM message, not by only answering in this chat. Send the reply to targetAgent \"" + CamTestMailboxAgent + "\" with correlationId \"" + correlationId + "\" and messageType \"cam-gui-test-reply\". Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
 
                     Dictionary<string, object> sendResult = ApiPost("/send", payload);
+                    ValidateStrictSend(sendResult);
                     string turnId = NestedValue(sendResult, "message", "turnId");
                     InvokeUi(delegate
                     {
-                        AppendOutput("STATE sent  delivery accepted");
+                        AppendOutput("STATE delivered  message entered selected agent thread");
                         AppendOutput("STATE wait  turnId=" + turnId + " testId=" + correlationId);
                         AppendOutput("STATE wait  waiting for CAM inbox reply to " + CamTestMailboxAgent + ", not reading session logs");
                     });
@@ -438,6 +455,8 @@ namespace QexowCamGui
                 string body = Value(message, "body");
                 string messageCorrelationId = Value(message, "correlationId");
                 string sourceAgent = Value(message, "sourceAgent");
+                string targetAgent = Value(message, "targetAgent");
+                string messageType = Value(message, "messageType");
                 bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
                     body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!idMatches) continue;
@@ -445,7 +464,11 @@ namespace QexowCamGui
                 {
                     continue;
                 }
-                if (Value(message, "targetAgent") != CamTestMailboxAgent)
+                if (!String.Equals(targetAgent, CamTestMailboxAgent, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (!String.IsNullOrWhiteSpace(messageType) && !String.Equals(messageType, "cam-gui-test-reply", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -457,8 +480,10 @@ namespace QexowCamGui
                 string header = "CAM REPLY MATCHED\r\n" +
                     "testId: " + correlationId + "\r\n" +
                     "messageId: " + Value(message, "messageId") + "\r\n" +
+                    "correlationId: " + messageCorrelationId + "\r\n" +
+                    "messageType: " + messageType + "\r\n" +
                     "sourceAgent: " + sourceAgent + "\r\n" +
-                    "targetAgent: " + Value(message, "targetAgent") + "\r\n" +
+                    "targetAgent: " + targetAgent + "\r\n" +
                     "delivery: " + Value(message, "delivery") + "\r\n" +
                     "error: " + Value(message, "error") + "\r\n" +
                     "REPLY BODY:\r\n";
@@ -496,11 +521,45 @@ namespace QexowCamGui
                 {
                     return "ignored same-testId reply to wrong targetAgent=" + Value(message, "targetAgent");
                 }
+                string messageType = Value(message, "messageType");
+                if (!String.IsNullOrWhiteSpace(messageType) && !String.Equals(messageType, "cam-gui-test-reply", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "ignored same-testId reply with wrong messageType=" + messageType;
+                }
                 if (body.IndexOf("CAM_GUI_TEST_RESPONSE", StringComparison.OrdinalIgnoreCase) < 0)
                 {
                     return "ignored same-testId reply missing CAM_GUI_TEST_RESPONSE marker";
                 }
             }
+            return "";
+        }
+
+        private void ValidateStrictSend(Dictionary<string, object> sendResult)
+        {
+            if (sendResult == null) throw new Exception("Strict send failed: empty response");
+            string ok = Value(sendResult, "ok");
+            string delivered = Value(sendResult, "delivered");
+            string queued = Value(sendResult, "queued");
+            string error = Value(sendResult, "error");
+            string messageError = NestedValue(sendResult, "message", "error");
+            string turnId = NestedValue(sendResult, "message", "turnId");
+            string delivery = NestedValue(sendResult, "message", "delivery");
+
+            if (String.Equals(ok, "False", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(queued, "True", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(delivered, "True", StringComparison.OrdinalIgnoreCase) ||
+                String.IsNullOrWhiteSpace(turnId) ||
+                !String.IsNullOrWhiteSpace(error) ||
+                !String.IsNullOrWhiteSpace(messageError))
+            {
+                throw new Exception("Strict send failed: delivery=" + delivery + " delivered=" + delivered + " queued=" + queued + " turnId=" + turnId + " error=" + FirstNonEmpty(error, messageError));
+            }
+        }
+
+        private static string FirstNonEmpty(string a, string b)
+        {
+            if (!String.IsNullOrWhiteSpace(a)) return a;
+            if (!String.IsNullOrWhiteSpace(b)) return b;
             return "";
         }
 
@@ -926,6 +985,11 @@ namespace QexowCamGui
                 }
                 return 37631;
             }
+        }
+
+        public static string Version
+        {
+            get { return "2.1.23"; }
         }
     }
 }

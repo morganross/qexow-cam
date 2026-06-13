@@ -28,7 +28,7 @@ function installAntigravitySkills(logFunc) {
 
   const skillDef = {
     name: "cam_send_message",
-    description: `Send a message to another agent via the Qexow CAM (CAM) protocol. Use this to respond to incoming requests from other agents. Boss Agents: If you are a Boss agent, please read the rules of engagement at: ${path.join(os.homedir(), ".qexow-cam", "boss.md")}`,
+    description: `Send a message to another agent via the Qexow CAM (CAM) protocol. Use this to respond to incoming requests from other agents. When replying to a CAM GUI diagnostic test, preserve the incoming correlationId and use messageType cam-gui-test-reply. Boss Agents: If you are a Boss agent, please read the rules of engagement at: ${path.join(os.homedir(), ".qexow-cam", "boss.md")}`,
     entrypoint: `"${camExe}" send "{{TargetAgent}}" "{{MessageText}}" --from antigravity`,
     parameters: {
       type: "object",
@@ -122,6 +122,13 @@ To send a message to another agent, use the installed \`scripts/Send-AgentMessag
 **Example PowerShell call:**
 \`\`\`powershell
 & "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "operator" -MessageText "Hello" -SourceAgent "coder-bot"
+\`\`\`
+
+When replying to a CAM GUI diagnostic test, send a CAM message back to the requested target mailbox and preserve the incoming \`correlationId\`. Use \`messageType "cam-gui-test-reply"\` when the incoming message asks for it.
+
+**Example diagnostic reply:**
+\`\`\`powershell
+& "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "CAM test, Kexau CAM test suite mailbox" -MessageText "CAM_GUI_TEST_RESPONSE <testId>. Agent: coder-bot. Node: RyzenLaptop. Status: idle." -SourceAgent "coder-bot" -CorrelationId "<testId>" -MessageType "cam-gui-test-reply"
 \`\`\`
 
 ## Checking Your Inbox
