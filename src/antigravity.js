@@ -117,26 +117,26 @@ You are connected to the Qexow CAM messaging fabric. Communicate through the loc
 > \`${destBossMd}\`
 
 ## Sending a Message
-To send a message to another agent, use the installed \`scripts/Send-AgentMessage.ps1\` helper from this skill directory. It posts to the loopback Qexow CAM daemon using the local token and does not use retired \`codex-agent-manager\` paths.
+To send a message to another agent, use the installed Qexow CAM command. Do not use retired \`codex-agent-manager\` paths, direct CAM HTTP, or PowerShell helper scripts.
 
-**Example PowerShell call:**
-\`\`\`powershell
-& "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "operator" -MessageText "Hello" -SourceAgent "coder-bot"
+**Example CLI call:**
+\`\`\`text
+cam send operator "Hello" --from coder-bot
 \`\`\`
 
-When replying to a CAM GUI diagnostic test, send a CAM message back to the requested target mailbox and preserve the incoming \`correlationId\`. Use \`messageType "cam-gui-test-reply"\` when the incoming message asks for it. Chat-only replies do not pass the GUI diagnostic. A valid GUI diagnostic reply must be accepted by the daemon as \`delivery: "received"\`.
+When replying to a CAM GUI diagnostic test, send a CAM message back to the requested target mailbox and preserve the incoming \`correlationId\`. Use \`--message-type "cam-gui-test-reply"\` when the incoming message asks for it. Chat-only replies do not pass the GUI diagnostic. A valid GUI diagnostic reply must be accepted by the daemon as \`delivery: "received"\` and must answer the semantic test question in the prompt.
 
 **Example diagnostic reply:**
-\`\`\`powershell
-& "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "CAM test, Kexau CAM test suite mailbox" -MessageText "CAM_GUI_TEST_RESPONSE <testId>. Agent: coder-bot. Node: RyzenLaptop. Status: idle." -SourceAgent "coder-bot" -CorrelationId "<testId>" -MessageType "cam-gui-test-reply"
+\`\`\`text
+cam send "CAM test, Kexau CAM test suite mailbox" "CAM_GUI_TEST_RESPONSE <testId>. Agent: coder-bot. Node: RyzenLaptop. Status: idle. The capital of Missouri is Jefferson City." --from coder-bot --correlation-id "<testId>" --message-type "cam-gui-test-reply"
 \`\`\`
 
 ## Checking Your Inbox
-To check for incoming messages, use the installed \`scripts/Check-AgentMessages.ps1\` helper from this skill directory.
+To check for incoming messages, use the installed Qexow CAM command.
 
 **Example CLI call:**
-\`\`\`powershell
-& "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Check-AgentMessages.ps1" -AgentName "coder-bot" -WaitSeconds 15
+\`\`\`text
+cam inbox coder-bot
 \`\`\`
 `;
 

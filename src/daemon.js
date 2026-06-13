@@ -35,7 +35,7 @@ import { bootstrapAntigravity } from "./antigravity.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.31";
+const CAM_VERSION = "2.1.32";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
 const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";
@@ -609,6 +609,16 @@ export class AgentManagerDaemon {
         const result = await this.#sendMessage(body);
         return json(res, 200, { ok: result.ok !== false, ...result });
       }
+      if (url.pathname === "/tests/pass" && req.method === "POST") {
+        const body = await readBody(req);
+        if (!body?.correlationId) throw new Error("correlationId is required");
+        appendTestEvent(body.correlationId, "passed", {
+          agentName: body.agentName || null,
+          semanticCheck: body.semanticCheck || null,
+          passedAt: new Date().toISOString(),
+        });
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === "/inbox" && req.method === "GET") {
         const agent = url.searchParams.get("agent");
         const wait = Number(url.searchParams.get("wait") || 0);
@@ -1144,7 +1154,7 @@ export class AgentManagerDaemon {
         ].join("\n")
       : "";
 
-    const prompt = [
+      const prompt = [
       "[Qexow CAM message]",
       `messageId: ${message.messageId}`,
       `correlationId: ${message.correlationId || ""}`,
@@ -1156,7 +1166,7 @@ export class AgentManagerDaemon {
       message.body,
       pendingText,
       "",
-      `[To reply to this message, use the qexow-cam-messaging skill or send via CAM HTTP to targetAgent "${message.sourceAgent}" and include correlationId "${message.correlationId || ""}". Do not use older codex-agent-manager paths.]`
+      `[To reply to this message, use the qexow-cam-messaging skill and send to targetAgent "${message.sourceAgent}" with correlationId "${message.correlationId || ""}". Do not use direct CAM HTTP or older codex-agent-manager paths.]`
     ].filter(Boolean).join("\n");
 
     try {
@@ -1189,6 +1199,7 @@ export class AgentManagerDaemon {
       const surfaced = markMailboxSurfaced(messageIdsToSurface, message.turnId);
       for (const queued of surfaced) appendEvent("message.surfaced", queued);
       message.delivery = "delivered";
+      setAgent(this.config, target.name, { lastDelivery: message });
       appendEvent("message.delivered", message);
       if (message.messageType === GUI_TEST_MESSAGE_TYPE) {
         appendTestEvent(message.correlationId, "outbound_delivered", { outbound: message });

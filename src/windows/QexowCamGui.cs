@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
 
-[assembly: AssemblyVersion("2.1.31.0")]
-[assembly: AssemblyFileVersion("2.1.31.0")]
-[assembly: AssemblyInformationalVersion("2.1.31")]
+[assembly: AssemblyVersion("2.1.32.0")]
+[assembly: AssemblyFileVersion("2.1.32.0")]
+[assembly: AssemblyInformationalVersion("2.1.32")]
 
 namespace QexowCamGui
 {
@@ -386,7 +386,7 @@ namespace QexowCamGui
                     payload["correlationId"] = correlationId;
                     payload["strict"] = true;
                     payload["messageType"] = "cam-gui-test";
-                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". You must reply by sending a Qexow CAM message, not by only answering in this chat. Send the reply to targetAgent \"" + CamTestMailboxAgent + "\" with correlationId \"" + correlationId + "\" and messageType \"cam-gui-test-reply\". Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
+                    payload["message"] = "Hello, how is your day? Respond by sending a Qexow CAM reply to targetAgent \"" + CamTestMailboxAgent + "\" with correlationId \"" + correlationId + "\" and messageType \"cam-gui-test-reply\". Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + ", your agent name, node name, current status, and the answer to this question: what is the capital of Missouri? Do not only answer in this chat.";
 
                     Dictionary<string, object> sendResult = ApiPost("/send", payload);
                     ValidateStrictSend(sendResult);
@@ -409,6 +409,7 @@ namespace QexowCamGui
                         }
                         else
                         {
+                            MarkGuiTestPassed(correlationId, agentName);
                             AppendOutput("STATE reply-received  CAM receiver reply received from " + agentName);
                             AppendOutput(response);
                             AppendOutput("TEST PASS");
@@ -510,19 +511,12 @@ namespace QexowCamGui
                 {
                     continue;
                 }
+                if (!BodyContainsMissouriAnswer(body))
+                {
+                    return "TEST_FAIL:STATE semantic-fail  matched reply did not contain Jefferson/Jefferson City/city\r\n" + BuildReplyHeader(message, correlationId, messageCorrelationId, messageType, sourceAgent, targetAgent, delivery) + body;
+                }
                 if (String.IsNullOrWhiteSpace(body)) body = "(empty body)";
-                string header = "CAM REPLY MATCHED\r\n" +
-                    "testId: " + correlationId + "\r\n" +
-                    "messageId: " + Value(message, "messageId") + "\r\n" +
-                    "correlationId: " + messageCorrelationId + "\r\n" +
-                    "messageType: " + messageType + "\r\n" +
-                    "sourceAgent: " + sourceAgent + "\r\n" +
-                    "sourceNode: " + Value(message, "sourceNode") + "\r\n" +
-                    "sourceRoute: " + Value(message, "sourceRoute") + "\r\n" +
-                    "targetAgent: " + targetAgent + "\r\n" +
-                    "delivery: " + delivery + "\r\n" +
-                    "error: " + Value(message, "error") + "\r\n" +
-                    "REPLY BODY:\r\n";
+                string header = BuildReplyHeader(message, correlationId, messageCorrelationId, messageType, sourceAgent, targetAgent, delivery);
                 if (!String.Equals(delivery, "received", StringComparison.OrdinalIgnoreCase))
                 {
                     return "TEST_FAIL:STATE reply-queued-only  matched reply was not marked received\r\n" + header + body;
@@ -530,6 +524,46 @@ namespace QexowCamGui
                 return header + body;
             }
             return "";
+        }
+
+        private bool BodyContainsMissouriAnswer(string body)
+        {
+            if (String.IsNullOrWhiteSpace(body)) return false;
+            return body.IndexOf("Jefferson City", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                body.IndexOf("Jefferson", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                body.IndexOf("city", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private string BuildReplyHeader(Dictionary<string, object> message, string correlationId, string messageCorrelationId, string messageType, string sourceAgent, string targetAgent, string delivery)
+        {
+            return "CAM REPLY MATCHED\r\n" +
+                "testId: " + correlationId + "\r\n" +
+                "messageId: " + Value(message, "messageId") + "\r\n" +
+                "correlationId: " + messageCorrelationId + "\r\n" +
+                "messageType: " + messageType + "\r\n" +
+                "sourceAgent: " + sourceAgent + "\r\n" +
+                "sourceNode: " + Value(message, "sourceNode") + "\r\n" +
+                "sourceRoute: " + Value(message, "sourceRoute") + "\r\n" +
+                "targetAgent: " + targetAgent + "\r\n" +
+                "delivery: " + delivery + "\r\n" +
+                "error: " + Value(message, "error") + "\r\n" +
+                "REPLY BODY:\r\n";
+        }
+
+        private void MarkGuiTestPassed(string correlationId, string agentName)
+        {
+            try
+            {
+                Dictionary<string, object> payload = new Dictionary<string, object>();
+                payload["correlationId"] = correlationId;
+                payload["agentName"] = agentName;
+                payload["semanticCheck"] = "missouri-capital";
+                ApiPost("/tests/pass", payload);
+            }
+            catch (Exception ex)
+            {
+                AppendOutput("STATE warn  failed to record passed test ledger: " + ex.Message);
+            }
         }
 
         private bool IsCurrentTestTimestamp(string timestamp, DateTime testStartUtc)
@@ -956,7 +990,7 @@ namespace QexowCamGui
 
         public static string Version
         {
-            get { return "2.1.31"; }
+            get { return "2.1.32"; }
         }
     }
 }
