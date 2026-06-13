@@ -18,6 +18,7 @@ import { ensureLocalToken, loadConfig } from "./config.js";
 import {
   appendEvent,
   appendMailbox,
+  appendTestEvent,
   getAgent,
   listAgents,
   loadRegistry,
@@ -34,8 +35,10 @@ import { bootstrapAntigravity } from "./antigravity.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.25";
+const CAM_VERSION = "2.1.26";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
+const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
+const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";
 
 export function showWindowsAlert(title, message, iconType = "error") {
   // Completely disabled by Security Block 5: Eradication of External Scripts
@@ -182,6 +185,7 @@ export class AgentManagerDaemon {
     this.ensuringThreads = new Map();
     this.mailboxListeners = [];
     this.threadSyncInterval = null;
+    this.skippedThreadReasons = new Map();
   }
 
   queueMessage(message) {
@@ -862,8 +866,12 @@ export class AgentManagerDaemon {
         let cwd = thread.cwd;
         if (!cwd || cwd === "outside-of-project") {
           const errMsg = `Thread ${tid} (${name}) is missing a valid workspace path. Skipping registry sync.`;
-          this.log("sync.agent.error", { threadId: tid, name, error: errMsg });
-          appendEvent("sync.agent.error", { threadId: tid, name, error: errMsg });
+          const previous = this.skippedThreadReasons.get(tid);
+          if (previous !== errMsg) {
+            this.log("sync.agent.error", { threadId: tid, name, error: errMsg });
+            appendEvent("sync.agent.error", { threadId: tid, name, error: errMsg, skipped: true, reason: "missing-workspace" });
+            this.skippedThreadReasons.set(tid, errMsg);
+          }
           continue;
         }
         if (cwd.startsWith("\\\\?\\")) {
@@ -899,10 +907,15 @@ export class AgentManagerDaemon {
                 
                 upsertAgent(this.config, {
                   name: uniqueName,
+                  node: thread.nodeName || agent.node || this.config.nodeName,
                   cwd,
                   threadId: tid,
                   status: agent.status || "idle",
                   threadSource: thread.thread_source,
+                  sourceHost: thread.sourceHost,
+                  hostKind: thread.hostKind,
+                  transport: thread.transport,
+                  route: thread.route,
                 });
                 this.threadToAgent.set(tid, uniqueName);
                 this.log("sync.agent.renamed.created-new", { oldName: agent.name, newName: uniqueName, threadId: tid });
@@ -914,6 +927,16 @@ export class AgentManagerDaemon {
           }
           
           this.threadToAgent.set(tid, agent.name);
+          setAgent(this.config, agent.name, {
+            node: thread.nodeName || agent.node || this.config.nodeName,
+            cwd,
+            threadSource: thread.thread_source,
+            sourceHost: thread.sourceHost,
+            hostKind: thread.hostKind,
+            transport: thread.transport,
+            route: thread.route,
+            status: agent.status || "idle",
+          });
           continue;
         }
 
@@ -930,10 +953,15 @@ export class AgentManagerDaemon {
         try {
           const agent = upsertAgent(this.config, {
             name: uniqueName,
+            node: thread.nodeName || this.config.nodeName,
             cwd,
             threadId: tid,
             status: "idle",
             threadSource: thread.thread_source,
+            sourceHost: thread.sourceHost,
+            hostKind: thread.hostKind,
+            transport: thread.transport,
+            route: thread.route,
           });
           this.threadToAgent.set(tid, uniqueName);
           appendEvent("agent.created", { agent });
@@ -942,8 +970,7 @@ export class AgentManagerDaemon {
           this.log("sync.agent.create.failed", { threadId: tid, error: e.message });
         }
       }
-
-      this.log("sync.agent.prune.skipped", { reason: "discovery is additive to avoid deleting active local agents" });
+      this.log("sync.agent.prune.skipped", { reason: "discovery is additive to avoid deleting active local agents", skippedThreads: this.skippedThreadReasons.size });
     } catch (e) {
       this.log("sync.apply.failed", { error: e.message });
     }
@@ -1006,32 +1033,38 @@ export class AgentManagerDaemon {
     const messageType = existingMessage ? existingMessage.messageType : (body?.messageType || null);
 
     if ((targetAgentObj && MAILBOX_ONLY_THREAD_SOURCES.has(targetAgentObj.threadSource)) || (!targetAgentObj && (targetAgent === "operator" || targetAgent === "windows-gui"))) {
+      const isGuiTestReply = messageType === GUI_TEST_REPLY_MESSAGE_TYPE && targetAgent === CAM_TEST_MAILBOX_AGENT;
       const message = existingMessage || {
         messageId: crypto.randomUUID(),
         correlationId: body?.correlationId || null,
         sourceAgent: body?.sourceAgent || "operator",
         targetAgent,
-        sourceNode: body?.sourceNode || this.config.nodeName,
+        sourceNode: this.#trustedSourceNode(body?.sourceAgent, body?.sourceNode),
+        sourceRoute: this.#trustedSourceRoute(body?.sourceAgent),
         targetNode: this.config.nodeName,
         timestamp: new Date().toISOString(),
         body: body?.message,
         messageType,
-        delivery: "queued",
+        delivery: "received",
       };
-      message.delivery = "queued";
+      message.delivery = "received";
       message.targetNode = targetAgentObj?.node || this.config.nodeName;
       delete message.error;
       if (!existingMessage) {
         this.queueMessage(message);
-        appendEvent("message.queued", message);
+        appendEvent(isGuiTestReply ? "gui_test.reply.received" : "message.received", message);
+        if (isGuiTestReply) {
+          appendTestEvent(message.correlationId, "reply_received", { inbound: message });
+        }
       }
-      this.log("mailbox_only_target.inbox.queued", { targetAgent, messageId: message.messageId, sourceAgent: message.sourceAgent });
-      return { delivered: false, queued: true, message };
+      this.log(isGuiTestReply ? "gui_test.reply.received" : "mailbox_only_target.inbox.received", { targetAgent, messageId: message.messageId, sourceAgent: message.sourceAgent });
+      return { delivered: false, queued: false, received: true, message };
     }
 
     if (targetAgentObj && targetAgentObj.threadSource === "antigravity") {
       if (strict) {
         const message = this.#buildFailedMessage(body, targetAgent, "strict send cannot deliver to Antigravity mailbox-only agents");
+        if (message.messageType === GUI_TEST_MESSAGE_TYPE) appendTestEvent(message.correlationId, "failed", { error: message.error, outbound: message });
         return { ok: false, delivered: false, queued: false, error: message.error, message };
       }
       const message = existingMessage || {
@@ -1039,7 +1072,8 @@ export class AgentManagerDaemon {
         correlationId: body.correlationId || null,
         sourceAgent: body.sourceAgent || "operator",
         targetAgent,
-        sourceNode: body.sourceNode || this.config.nodeName,
+        sourceNode: this.#trustedSourceNode(body.sourceAgent, body.sourceNode),
+        sourceRoute: this.#trustedSourceRoute(body.sourceAgent),
         targetNode: targetAgentObj.node,
         timestamp: new Date().toISOString(),
         body: body.message,
@@ -1076,6 +1110,7 @@ export class AgentManagerDaemon {
       const ensureErr = resolveError || new Error(`unable to resolve target thread for ${targetAgent}`);
       if (strict) {
         const message = this.#buildFailedMessage(body, targetAgent, ensureErr.message);
+        if (message.messageType === GUI_TEST_MESSAGE_TYPE) appendTestEvent(message.correlationId, "failed", { error: message.error, outbound: message });
         return { ok: false, delivered: false, queued: false, error: message.error, message };
       }
       const message = existingMessage || {
@@ -1083,7 +1118,8 @@ export class AgentManagerDaemon {
         correlationId: body?.correlationId || null,
         sourceAgent: body?.sourceAgent || "operator",
         targetAgent: targetAgent,
-        sourceNode: body?.sourceNode || this.config.nodeName,
+        sourceNode: this.#trustedSourceNode(body?.sourceAgent, body?.sourceNode),
+        sourceRoute: this.#trustedSourceRoute(body?.sourceAgent),
         targetNode: null,
         timestamp: new Date().toISOString(),
         body: body?.message,
@@ -1117,13 +1153,22 @@ export class AgentManagerDaemon {
       correlationId: body.correlationId || null,
       sourceAgent: body.sourceAgent || "operator",
       targetAgent: targetAgent,
-      sourceNode: body.sourceNode || this.config.nodeName,
+      sourceNode: this.#trustedSourceNode(body.sourceAgent, body.sourceNode),
+      sourceRoute: this.#trustedSourceRoute(body.sourceAgent),
       targetNode: target.node,
       timestamp: new Date().toISOString(),
       body: body.message,
       messageType,
       delivery: "pending",
     };
+    if (!existingMessage && message.messageType === GUI_TEST_MESSAGE_TYPE) {
+      appendTestEvent(message.correlationId, "started", {
+        targetAgent,
+        targetNode: target.node,
+        targetThreadId: target.threadId,
+        outbound: message,
+      });
+    }
 
     // Filter pending mailbox to exclude this message if it's already queued
     const pending = pendingMailbox(targetAgent).filter(m => m.messageId !== message.messageId);
@@ -1185,7 +1230,11 @@ export class AgentManagerDaemon {
       
       const surfaced = markMailboxSurfaced(messageIdsToSurface, message.turnId);
       for (const queued of surfaced) appendEvent("message.surfaced", queued);
+      message.delivery = "delivered";
       appendEvent("message.delivered", message);
+      if (message.messageType === GUI_TEST_MESSAGE_TYPE) {
+        appendTestEvent(message.correlationId, "outbound_delivered", { outbound: message });
+      }
       return { delivered: true, queued: false, message };
     } catch (error) {
       if (strict) {
@@ -1195,6 +1244,7 @@ export class AgentManagerDaemon {
         message.delivery = "failed";
         message.error = error.message;
         appendEvent("message.failed.strict", message);
+        if (message.messageType === GUI_TEST_MESSAGE_TYPE) appendTestEvent(message.correlationId, "failed", { error: error.message, outbound: message });
         return { ok: false, delivered: false, queued: false, error: error.message, message };
       }
       message.delivery = "queued";
@@ -1226,7 +1276,8 @@ export class AgentManagerDaemon {
       correlationId: body?.correlationId || null,
       sourceAgent: body?.sourceAgent || "operator",
       targetAgent,
-      sourceNode: body?.sourceNode || this.config.nodeName,
+      sourceNode: this.#trustedSourceNode(body?.sourceAgent, body?.sourceNode),
+      sourceRoute: this.#trustedSourceRoute(body?.sourceAgent),
       targetNode: null,
       timestamp: new Date().toISOString(),
       body: body?.message || "",
@@ -1234,6 +1285,20 @@ export class AgentManagerDaemon {
       delivery: "failed",
       error,
     };
+  }
+
+  #trustedSourceNode(sourceAgent, fallbackNode = null) {
+    const agent = sourceAgent ? getAgent(this.config, sourceAgent) : null;
+    if (agent?.node) return agent.node;
+    return this.config.nodeName || fallbackNode || os.hostname();
+  }
+
+  #trustedSourceRoute(sourceAgent) {
+    const agent = sourceAgent ? getAgent(this.config, sourceAgent) : null;
+    if (agent?.route) return agent.route;
+    if (agent?.transport) return agent.transport;
+    if (agent?.threadSource) return agent.threadSource;
+    return "local";
   }
 
   async #repairStaleThreadAndEnsure(targetAgent, originalError) {

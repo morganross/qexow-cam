@@ -3,7 +3,7 @@
 ## Test Details
 - **Test Name:** Install Windows CAM
 - **Date:** June 12, 2026
-- **Status:** PASS against GitHub-built `v2.1.25` installer
+- **Status:** PASS against GitHub-built `v2.1.25` installer; pending rerun for `v2.1.26`
 - **Execution Mode:** GitHub release installer, local Windows user
 
 ## Steps Taken
@@ -21,7 +21,7 @@
   ```json
   {
     "ok": true,
-    "version": "2.1.25",
+    "version": "2.1.26",
     "nodeName": "RyzenLaptop",
     "startedAt": "2026-06-13T00:53:28.510Z",
     "appServerInitialized": true

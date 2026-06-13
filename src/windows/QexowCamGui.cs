@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
 
-[assembly: AssemblyVersion("2.1.25.0")]
-[assembly: AssemblyFileVersion("2.1.25.0")]
-[assembly: AssemblyInformationalVersion("2.1.25")]
+[assembly: AssemblyVersion("2.1.26.0")]
+[assembly: AssemblyFileVersion("2.1.26.0")]
+[assembly: AssemblyInformationalVersion("2.1.26")]
 
 namespace QexowCamGui
 {
@@ -297,17 +297,22 @@ namespace QexowCamGui
         {
             agentsGrid.Columns.Clear();
             agentsGrid.Rows.Clear();
-            foreach (string column in new[] { "light", "chatTitle", "name", "status", "node", "threadId", "activeTurnId", "cwd", "model" })
+            foreach (string column in new[] { "light", "chatTitle", "name", "status", "node", "route", "source", "testable", "threadId", "activeTurnId", "cwd", "model" })
             {
                 agentsGrid.Columns.Add(column, column);
             }
             agentsGrid.Columns["light"].HeaderText = "";
             agentsGrid.Columns["chatTitle"].HeaderText = "chat";
             agentsGrid.Columns["name"].HeaderText = "agent mapping";
+            agentsGrid.Columns["route"].HeaderText = "route";
+            agentsGrid.Columns["source"].HeaderText = "source";
             agentsGrid.Columns["light"].Width = 34;
             agentsGrid.Columns["light"].FillWeight = 8;
             agentsGrid.Columns["chatTitle"].FillWeight = 28;
             agentsGrid.Columns["name"].FillWeight = 22;
+            agentsGrid.Columns["route"].FillWeight = 12;
+            agentsGrid.Columns["source"].FillWeight = 12;
+            agentsGrid.Columns["testable"].FillWeight = 8;
             foreach (Dictionary<string, object> agent in agents)
             {
                 int rowIndex = agentsGrid.Rows.Add(
@@ -316,6 +321,9 @@ namespace QexowCamGui
                     Value(agent, "name"),
                     Value(agent, "status"),
                     Value(agent, "node"),
+                    Value(agent, "route"),
+                    Value(agent, "sourceHost"),
+                    IsAgentTestable(agent) ? "yes" : "no",
                     Value(agent, "threadId"),
                     Value(agent, "activeTurnId"),
                     Value(agent, "cwd"),
@@ -328,7 +336,17 @@ namespace QexowCamGui
                 row.Cells["light"].Style.ForeColor = color;
                 row.Cells["light"].Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
             }
-            outputBox.Text = AppendLine(outputBox.Text, "Loaded " + agents.Count + " agent/session mappings.");
+            if (agents.Count == 0)
+            {
+                outputBox.Text = AppendLine(outputBox.Text, "Refreshing CAM status; discovery has not returned testable mappings yet.");
+                return;
+            }
+            int testableCount = 0;
+            foreach (Dictionary<string, object> agent in agents)
+            {
+                if (IsAgentTestable(agent)) testableCount++;
+            }
+            outputBox.Text = AppendLine(outputBox.Text, "Loaded " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited agent/session mappings.");
         }
 
         private void TestSelectedAgent()
@@ -342,9 +360,10 @@ namespace QexowCamGui
             if (string.IsNullOrWhiteSpace(agentName)) return;
             string threadId = Convert.ToString(agentsGrid.SelectedRows[0].Cells["threadId"].Value);
             string status = Convert.ToString(agentsGrid.SelectedRows[0].Cells["status"].Value);
-            if (String.IsNullOrWhiteSpace(threadId) || String.Equals(status, "stale", StringComparison.OrdinalIgnoreCase) || String.Equals(status, "unbound", StringComparison.OrdinalIgnoreCase))
+            string testable = Convert.ToString(agentsGrid.SelectedRows[0].Cells["testable"].Value);
+            if (String.IsNullOrWhiteSpace(threadId) || String.Equals(status, "stale", StringComparison.OrdinalIgnoreCase) || String.Equals(status, "unbound", StringComparison.OrdinalIgnoreCase) || !String.Equals(testable, "yes", StringComparison.OrdinalIgnoreCase))
             {
-                AppendOutput("TEST FAIL  selected agent is not testable: status=" + status + " threadId=" + threadId);
+                AppendOutput("TEST FAIL  selected agent is not testable: status=" + status + " threadId=" + threadId + " testable=" + testable);
                 return;
             }
 
@@ -358,6 +377,7 @@ namespace QexowCamGui
             {
                 try
                 {
+                    DateTime testStartUtc = DateTime.UtcNow;
                     string correlationId = Guid.NewGuid().ToString("N");
                     Dictionary<string, object> payload = new Dictionary<string, object>();
                     payload["targetAgent"] = agentName;
@@ -373,21 +393,30 @@ namespace QexowCamGui
                     string turnId = NestedValue(sendResult, "message", "turnId");
                     InvokeUi(delegate
                     {
-                        AppendOutput("STATE delivered  message entered selected agent thread");
-                        AppendOutput("STATE wait  turnId=" + turnId + " testId=" + correlationId);
-                        AppendOutput("STATE wait  waiting for CAM inbox reply to " + CamTestMailboxAgent + ", not reading session logs");
+                        AppendOutput("STATE outbound-delivered  message entered selected agent thread");
+                        AppendOutput("STATE waiting-for-reply  turnId=" + turnId + " testId=" + correlationId);
+                        AppendOutput("STATE waiting-for-reply  waiting for CAM receiver reply to " + CamTestMailboxAgent + ", not reading session logs");
                     });
 
-                    string response = WaitForMailboxResponse(agentName, correlationId, 90000);
+                    string response = WaitForMailboxResponse(agentName, correlationId, testStartUtc, 90000);
                     InvokeUi(delegate
                     {
-                        AppendOutput("STATE done  CAM inbox reply received from " + agentName);
-                        AppendOutput(response);
-                        AppendOutput("TEST PASS");
+                        bool failedReply = response.StartsWith("TEST_FAIL:", StringComparison.Ordinal);
+                        if (failedReply)
+                        {
+                            AppendOutput(response.Substring("TEST_FAIL:".Length));
+                            AppendOutput("TEST FAIL");
+                        }
+                        else
+                        {
+                            AppendOutput("STATE reply-received  CAM receiver reply received from " + agentName);
+                            AppendOutput(response);
+                            AppendOutput("TEST PASS");
+                        }
                         testButton.Enabled = true;
                         testButton.Text = "Test Selected Agent";
                     });
-                    log("test-ok agent=" + agentName);
+                    log((response.StartsWith("TEST_FAIL:", StringComparison.Ordinal) ? "test-fail" : "test-ok") + " agent=" + agentName);
                 }
                 catch (Exception ex)
                 {
@@ -403,7 +432,7 @@ namespace QexowCamGui
             });
         }
 
-        private string WaitForMailboxResponse(string agentName, string correlationId, int timeoutMs)
+        private string WaitForMailboxResponse(string agentName, string correlationId, DateTime testStartUtc, int timeoutMs)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             string lastSummary = "no matching CAM inbox reply seen";
@@ -422,7 +451,7 @@ namespace QexowCamGui
                     });
 
                     Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=" + Uri.EscapeDataString(CamTestMailboxAgent) + "&wait=5");
-                    string response = FindMailboxResponse(inboxResult, agentName, correlationId);
+                    string response = FindMailboxResponse(inboxResult, agentName, correlationId, testStartUtc);
                     if (!String.IsNullOrWhiteSpace(response)) return response;
                     lastSummary = SummarizeInbox(inboxResult, agentName, correlationId);
                     InvokeUi(delegate
@@ -444,7 +473,7 @@ namespace QexowCamGui
             throw new Exception("Timed out waiting for a CAM inbox reply from " + agentName + " with testId=" + correlationId + ". " + lastSummary);
         }
 
-        private string FindMailboxResponse(Dictionary<string, object> inboxResult, string expectedAgentName, string correlationId)
+        private string FindMailboxResponse(Dictionary<string, object> inboxResult, string expectedAgentName, string correlationId, DateTime testStartUtc)
         {
             ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
             if (messages == null) return "";
@@ -457,6 +486,11 @@ namespace QexowCamGui
                 string sourceAgent = Value(message, "sourceAgent");
                 string targetAgent = Value(message, "targetAgent");
                 string messageType = Value(message, "messageType");
+                string delivery = Value(message, "delivery");
+                if (!IsCurrentTestTimestamp(Value(message, "timestamp"), testStartUtc))
+                {
+                    continue;
+                }
                 bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
                     body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!idMatches) continue;
@@ -483,13 +517,27 @@ namespace QexowCamGui
                     "correlationId: " + messageCorrelationId + "\r\n" +
                     "messageType: " + messageType + "\r\n" +
                     "sourceAgent: " + sourceAgent + "\r\n" +
+                    "sourceNode: " + Value(message, "sourceNode") + "\r\n" +
+                    "sourceRoute: " + Value(message, "sourceRoute") + "\r\n" +
                     "targetAgent: " + targetAgent + "\r\n" +
-                    "delivery: " + Value(message, "delivery") + "\r\n" +
+                    "delivery: " + delivery + "\r\n" +
                     "error: " + Value(message, "error") + "\r\n" +
                     "REPLY BODY:\r\n";
+                if (!String.Equals(delivery, "received", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "TEST_FAIL:STATE reply-queued-only  matched reply was not marked received\r\n" + header + body;
+                }
                 return header + body;
             }
             return "";
+        }
+
+        private bool IsCurrentTestTimestamp(string timestamp, DateTime testStartUtc)
+        {
+            if (String.IsNullOrWhiteSpace(timestamp)) return false;
+            DateTime parsed;
+            if (!DateTime.TryParse(timestamp, null, System.Globalization.DateTimeStyles.AdjustToUniversal, out parsed)) return false;
+            return parsed.ToUniversalTime() >= testStartUtc.AddSeconds(-2);
         }
 
         private string SummarizeInbox(Dictionary<string, object> inboxResult, string expectedAgentName, string correlationId)
@@ -630,6 +678,21 @@ namespace QexowCamGui
             return agents;
         }
 
+        private bool IsAgentTestable(Dictionary<string, object> agent)
+        {
+            string threadId = Value(agent, "threadId");
+            string status = Value(agent, "status");
+            string threadSource = Value(agent, "threadSource");
+            string route = Value(agent, "route");
+            if (String.IsNullOrWhiteSpace(threadId)) return false;
+            if (String.Equals(status, "stale", StringComparison.OrdinalIgnoreCase)) return false;
+            if (String.Equals(status, "unbound", StringComparison.OrdinalIgnoreCase)) return false;
+            if (String.Equals(threadSource, "mailbox", StringComparison.OrdinalIgnoreCase)) return false;
+            if (String.Equals(threadSource, "antigravity", StringComparison.OrdinalIgnoreCase)) return false;
+            if (String.IsNullOrWhiteSpace(route)) return false;
+            return true;
+        }
+
         private List<Dictionary<string, object>> FilterActiveAgents(List<Dictionary<string, object>> agents)
         {
             HashSet<string> activeThreadIds = LoadActiveThreadIds();
@@ -650,11 +713,19 @@ namespace QexowCamGui
                         Dictionary<string, object> thread = activeThreadMetadata[threadId];
                         agent["chatTitle"] = Value(thread, "title");
                         agent["threadSource"] = Value(thread, "thread_source");
+                        agent["sourceHost"] = Value(thread, "sourceHost");
+                        agent["hostKind"] = Value(thread, "hostKind");
+                        agent["transport"] = Value(thread, "transport");
+                        agent["route"] = Value(thread, "route");
+                        if (!String.IsNullOrWhiteSpace(Value(thread, "nodeName")))
+                        {
+                            agent["node"] = Value(thread, "nodeName");
+                        }
                     }
                     filtered.Add(agent);
                 }
             }
-            log("active-filter applied active=" + filtered.Count + " total=" + agents.Count + " hidden=" + (agents.Count - filtered.Count));
+            log("active-filter applied active=" + filtered.Count + " total=" + agents.Count + " skipped=" + (agents.Count - filtered.Count));
             return filtered;
         }
 
@@ -989,7 +1060,7 @@ namespace QexowCamGui
 
         public static string Version
         {
-            get { return "2.1.25"; }
+            get { return "2.1.26"; }
         }
     }
 }

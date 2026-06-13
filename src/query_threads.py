@@ -27,6 +27,61 @@ def is_in_any_workspace(cwd, workspace_roots):
             return True
     return False
 
+def load_codex_global_state(codex_dir):
+    global_state_path = os.path.join(codex_dir, '.codex-global-state.json')
+    if not os.path.exists(global_state_path):
+        return {}
+    try:
+        with open(global_state_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def remote_connection_aliases(state):
+    aliases = {}
+    for conn in state.get('codex-managed-remote-connections', []) or []:
+        host_id = conn.get('hostId') or ''
+        alias = conn.get('alias') or conn.get('displayName') or host_id.replace('remote-ssh-discovered:', '')
+        if host_id and alias:
+            aliases[host_id] = alias
+    return aliases
+
+def infer_route_metadata(cwd, thread_source, state):
+    aliases = remote_connection_aliases(state)
+    metadata = {
+        "nodeName": os.environ.get("CAM_NODE_NAME") or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "local",
+        "sourceHost": "local",
+        "hostKind": "local",
+        "transport": "local",
+        "route": "local",
+    }
+    if thread_source == "antigravity":
+        metadata["transport"] = "antigravity"
+        metadata["route"] = "antigravity-local"
+        return metadata
+
+    normalized = (cwd or "").replace('\\\\?\\', '').replace('\\', '/')
+    for project in state.get('remote-projects', []) or []:
+        remote_path = (project.get('remotePath') or '').rstrip('/')
+        host_id = project.get('hostId') or ''
+        alias = aliases.get(host_id) or host_id.replace('remote-ssh-discovered:', '')
+        if remote_path and alias and normalized.startswith(remote_path.rstrip('/') + '/'):
+            metadata["nodeName"] = alias
+            metadata["sourceHost"] = alias
+            metadata["hostKind"] = "remote"
+            metadata["transport"] = "codex-managed"
+            metadata["route"] = f"codex-managed:{alias}"
+            return metadata
+    if normalized.startswith('/home/') or normalized.startswith('/root/') or normalized.startswith('/opt/'):
+        selected = state.get('selected-remote-host-id') or ''
+        alias = aliases.get(selected) or selected.replace('remote-ssh-discovered:', '') or "remote"
+        metadata["nodeName"] = alias
+        metadata["sourceHost"] = alias
+        metadata["hostKind"] = "remote"
+        metadata["transport"] = "codex-managed"
+        metadata["route"] = f"codex-managed:{alias}"
+    return metadata
+
 def decode_varint(buffer, pos):
     val = 0
     shift = 0
@@ -39,7 +94,7 @@ def decode_varint(buffer, pos):
         shift += 7
     return val, pos
 
-def discover_antigravity(workspace_roots):
+def discover_antigravity(workspace_roots, state):
     agy_dir = os.path.expanduser('~/.gemini/antigravity')
     brain_dir = os.path.join(agy_dir, 'brain')
     pb_path = os.path.join(agy_dir, 'agyhub_summaries_proto.pb')
@@ -155,7 +210,8 @@ def discover_antigravity(workspace_roots):
                 "agent_nickname": "",
                 "agent_role": "",
                 "cwd": cwd,
-                "thread_source": "antigravity"
+                "thread_source": "antigravity",
+                **infer_route_metadata(cwd, "antigravity", state)
             })
             
     return results
@@ -168,15 +224,13 @@ def main():
             db_path = os.path.expanduser('~/.codex/state_5.sqlite')
         
         codex_dir = os.path.dirname(db_path)
-        global_state_path = os.path.join(codex_dir, '.codex-global-state.json')
         session_index_path = os.path.join(codex_dir, 'session_index.jsonl')
+        state = load_codex_global_state(codex_dir)
         
         # 1. Read workspace roots
         workspace_roots = []
-        if os.path.exists(global_state_path):
+        if state:
             try:
-                with open(global_state_path, 'r', encoding='utf-8') as f:
-                    state = json.load(f)
                 active = state.get('active-workspace-roots', [])
                 saved = state.get('electron-saved-workspace-roots', [])
                 workspace_roots = list(set(active + saved))
@@ -209,7 +263,7 @@ def main():
                 
                 # Query active user threads
                 cursor.execute("""
-                    SELECT id, title, agent_nickname, agent_role, cwd 
+                    SELECT id, title, agent_nickname, agent_role, cwd, source, thread_source AS codex_thread_source
                     FROM threads 
                     WHERE archived = 0 AND thread_source = 'user'
                 """)
@@ -224,9 +278,10 @@ def main():
             if latest_name:
                 r['title'] = latest_name
             r['thread_source'] = 'codex'
+            r.update(infer_route_metadata(r.get('cwd'), 'codex', state))
 
         # Discover Antigravity threads
-        agy_rows = discover_antigravity(workspace_roots)
+        agy_rows = discover_antigravity(workspace_roots, state)
         rows.extend(agy_rows)
         
         # Filter threads by workspace roots if available

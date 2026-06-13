@@ -29,6 +29,7 @@ export function paths() {
     config: path.join(root, "config.json"),
     registry: path.join(root, "agents.json"),
     mailbox: path.join(root, "mailbox.jsonl"),
+    tests: path.join(root, "tests.jsonl"),
     events: path.join(root, "events.jsonl"),
     daemon: path.join(root, "daemon.json"),
     pid: path.join(root, "daemon.pid"),

@@ -60,6 +60,25 @@ jobs:
         }
         & $iscc installer.iss
 
+    - name: Smoke test installer
+      shell: pwsh
+      run: |
+        $installer = "dist\QexowCamSetup.exe"
+        $log = Join-Path $env:TEMP "qexow-cam-installer-smoke.log"
+        if (Test-Path $log) { Remove-Item $log -Force }
+        $p = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log" -PassThru -Wait
+        if ($p.ExitCode -ne 0) {
+          Get-Content $log -ErrorAction SilentlyContinue
+          throw "Installer smoke failed with exit code $($p.ExitCode)"
+        }
+        $text = Get-Content $log -Raw
+        if ($text -notmatch "Installation process succeeded") {
+          Get-Content $log
+          throw "Installer smoke log did not contain success marker"
+        }
+        if (-not (Test-Path "C:\Program Files\Qexow CAM\cam.exe")) { throw "Installed cam.exe missing" }
+        if (-not (Test-Path "C:\Program Files\Qexow CAM\qexow-cam-gui.exe")) { throw "Installed GUI missing" }
+
     - name: Delete standalone executable payloads
       run: npm run purge-standalone-exes
 

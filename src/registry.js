@@ -81,6 +81,10 @@ export function upsertAgent(config, partial) {
     updatedAt: now,
     lastDelivery: partial.lastDelivery ?? existing.lastDelivery ?? null,
     threadSource: partial.threadSource !== undefined ? partial.threadSource : (existing.threadSource ?? "codex"),
+    sourceHost: partial.sourceHost !== undefined ? partial.sourceHost : (existing.sourceHost ?? partial.node ?? registry.nodeName ?? config.nodeName),
+    hostKind: partial.hostKind !== undefined ? partial.hostKind : (existing.hostKind ?? "local"),
+    transport: partial.transport !== undefined ? partial.transport : (existing.transport ?? "local"),
+    route: partial.route !== undefined ? partial.route : (existing.route ?? "local"),
   };
   registry.agents[partial.name] = agent;
   saveRegistry(registry);
@@ -116,6 +120,16 @@ export function appendMailbox(message) {
   appendJsonl(paths().mailbox, message);
 }
 
+export function appendTestEvent(testId, state, payload = {}) {
+  if (!testId) return;
+  appendJsonl(paths().tests, {
+    testId,
+    state,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  });
+}
+
 export function readMailbox(agentName = null) {
   const rows = readJsonl(paths().mailbox);
   return agentName ? rows.filter((row) => row.targetAgent === agentName) : rows;
@@ -139,5 +153,24 @@ export function markMailboxSurfaced(messageIds, turnId) {
     }
   }
   fs.writeFileSync(paths().mailbox, all.map((row) => JSON.stringify(row)).join("\n") + (all.length ? "\n" : ""), "utf8");
+  return touched;
+}
+
+export function markMailboxConsumed(messageId, testId) {
+  if (!messageId) return null;
+  const all = readJsonl(paths().mailbox);
+  const now = new Date().toISOString();
+  let touched = null;
+  for (const row of all) {
+    if (row.messageId === messageId) {
+      if (!row.consumedAt) row.consumedAt = now;
+      if (!row.consumedByTestId) row.consumedByTestId = testId || null;
+      touched = row;
+      break;
+    }
+  }
+  if (touched) {
+    fs.writeFileSync(paths().mailbox, all.map((row) => JSON.stringify(row)).join("\n") + (all.length ? "\n" : ""), "utf8");
+  }
   return touched;
 }

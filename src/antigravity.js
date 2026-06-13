@@ -28,7 +28,7 @@ function installAntigravitySkills(logFunc) {
 
   const skillDef = {
     name: "cam_send_message",
-    description: `Send a message to another agent via the Qexow CAM (CAM) protocol. Use this to respond to incoming requests from other agents. When replying to a CAM GUI diagnostic test, preserve the incoming correlationId and use messageType cam-gui-test-reply. Boss Agents: If you are a Boss agent, please read the rules of engagement at: ${path.join(os.homedir(), ".qexow-cam", "boss.md")}`,
+    description: `Send a message to another agent via the Qexow CAM (CAM) protocol. Use this to respond to incoming requests from other agents. This basic Antigravity send skill cannot satisfy strict CAM GUI diagnostics unless it can preserve correlationId and messageType cam-gui-test-reply. Boss Agents: If you are a Boss agent, please read the rules of engagement at: ${path.join(os.homedir(), ".qexow-cam", "boss.md")}`,
     entrypoint: `"${camExe}" send "{{TargetAgent}}" "{{MessageText}}" --from antigravity`,
     parameters: {
       type: "object",
@@ -124,7 +124,7 @@ To send a message to another agent, use the installed \`scripts/Send-AgentMessag
 & "$env:USERPROFILE\\.codex\\skills\\qexow-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "operator" -MessageText "Hello" -SourceAgent "coder-bot"
 \`\`\`
 
-When replying to a CAM GUI diagnostic test, send a CAM message back to the requested target mailbox and preserve the incoming \`correlationId\`. Use \`messageType "cam-gui-test-reply"\` when the incoming message asks for it.
+When replying to a CAM GUI diagnostic test, send a CAM message back to the requested target mailbox and preserve the incoming \`correlationId\`. Use \`messageType "cam-gui-test-reply"\` when the incoming message asks for it. Chat-only replies do not pass the GUI diagnostic. A valid GUI diagnostic reply must be accepted by the daemon as \`delivery: "received"\`.
 
 **Example diagnostic reply:**
 \`\`\`powershell
