@@ -20,6 +20,8 @@ function usage() {
   cam doctor
   cam daemon start|stop|status
   cam node enroll <name> --ssh <user@host> --key <path> --remote-root <path>
+  cam node discover <peer-name> --agent <agent-name> [--wait-seconds <n>]
+  cam node sync [peer-name]
   cam node list
   cam agent create <name> --cwd <path> [--thread-id <id>] [--source <codex|antigravity>] [--model <id>] [--model-provider <provider>] [--effort <minimal|low|medium|high|xhigh>] [--speed <standard|fast>] [--service-tier <tier>]
   cam agent resume <name>
@@ -494,6 +496,28 @@ async function commandNode(args) {
     console.log(JSON.stringify(registry.peers || {}, null, 2));
     return;
   }
+  if (action === "discover") {
+    const opts = parseOptions(args.slice(1));
+    const peerName = opts._[0];
+    if (!peerName) throw new Error("peer name is required");
+    if (!opts.agent) throw new Error("--agent <agent-name> is required");
+    const result = await apiRequest("POST", "/nodes/discover", {
+      peerName,
+      targetAgent: opts.agent,
+      waitSeconds: opts.waitSeconds || 45,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (action === "sync") {
+    const opts = parseOptions(args.slice(1));
+    const peerName = opts._[0] || null;
+    const result = await apiRequest("POST", "/nodes/sync", {
+      peerName,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   if (action === "enroll") {
     const opts = parseOptions(args.slice(1));
     const name = opts._[0];
@@ -516,7 +540,7 @@ async function commandNode(args) {
     console.log(JSON.stringify(peer, null, 2));
     return;
   }
-  throw new Error("expected node enroll|list");
+  throw new Error("expected node discover|enroll|list|sync");
 }
 
 async function commandService(cmd, args) {

@@ -12,6 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
+import { spawn } from "node:child_process";
 import { AppServerClient, textInput } from "./app-server.js";
 import { ensureLocalToken, loadConfig } from "./config.js";
 import { discoverThreads } from "./thread-discovery.js";
@@ -20,6 +21,8 @@ import {
   appendMailbox,
   appendTestEvent,
   getAgent,
+  getPeer,
+  listPeers,
   listAgents,
   loadRegistry,
   markMailboxSurfaced,
@@ -27,11 +30,20 @@ import {
   readMailbox,
   saveRegistry,
   setAgent,
+  upsertPeer,
   upsertAgent,
 } from "./registry.js";
 import { paths, writeJsonAtomic, readJson } from "./paths.js";
 import { logEvent, enforceRetention } from "./logger.js";
 import { bootstrapAntigravity } from "./antigravity.js";
+import {
+  buildNodeDiscoveryPrompt,
+  NODE_DISCOVERY_MARKER,
+  NODE_DISCOVERY_REPLY_TYPE,
+  NODE_DISCOVERY_REQUEST_TYPE,
+  parseNodeDiscoveryEvidence,
+} from "./node-discovery.js";
+import { discoverPeerFactsFromMarkdown } from "./peer-doc-discovery.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
@@ -39,6 +51,11 @@ const CAM_VERSION = "2.1.32";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
 const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";
+const REMOTE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_REMOTE_ROOTS = [
+  "/home/ubuntu/codex-agent-manager",
+  "/root/codex-agent-manager",
+];
 
 export function showWindowsAlert(title, message, iconType = "error") {
   // Completely disabled by Security Block 5: Eradication of External Scripts
@@ -185,7 +202,9 @@ export class AgentManagerDaemon {
     this.ensuringThreads = new Map();
     this.mailboxListeners = [];
     this.threadSyncInterval = null;
+    this.peerSyncInterval = null;
     this.skippedThreadReasons = new Map();
+    this.peerProbeAttempts = new Map();
   }
 
   queueMessage(message) {
@@ -257,6 +276,10 @@ export class AgentManagerDaemon {
 
     await this.appServer.start();
     this.#ensureBuiltinMailboxAgents();
+    this.#restorePeerTransportFromBackups();
+    this.#refreshDocPeerFacts();
+    void this.#probeDocDiscoveredPeers();
+    void this.#syncKnownPeers();
     for (const agent of listAgents(this.config)) {
       if (agent.threadId) this.threadToAgent.set(agent.threadId, agent.name);
     }
@@ -264,6 +287,9 @@ export class AgentManagerDaemon {
     this.threadSyncInterval = setInterval(() => {
       void this.syncActiveThreads();
     }, 30000);
+    this.peerSyncInterval = setInterval(() => {
+      void this.#syncKnownPeers();
+    }, REMOTE_SYNC_INTERVAL_MS);
     this.appServer.on("turn/started", ({ threadId, turn }) => {
       const name = this.threadToAgent.get(threadId);
       if (name) setAgent(this.config, name, { status: "active", activeTurnId: turn.id });
@@ -319,6 +345,10 @@ export class AgentManagerDaemon {
     if (this.threadSyncInterval) {
       clearInterval(this.threadSyncInterval);
       this.threadSyncInterval = null;
+    }
+    if (this.peerSyncInterval) {
+      clearInterval(this.peerSyncInterval);
+      this.peerSyncInterval = null;
     }
     await new Promise((resolve) => this.server?.close(resolve));
     this.appServer.stop();
@@ -677,6 +707,16 @@ export class AgentManagerDaemon {
           : [];
         return json(res, 200, { ok: true, logs: rows });
       }
+      if (url.pathname === "/nodes/discover" && req.method === "POST") {
+        const body = await readBody(req);
+        const result = await this.#discoverPeer(body);
+        return json(res, 200, { ok: result.ok !== false, ...result });
+      }
+      if (url.pathname === "/nodes/sync" && req.method === "POST") {
+        const body = await readBody(req);
+        const result = await this.syncPeer(body?.peerName || null);
+        return json(res, 200, { ok: result.ok !== false, ...result });
+      }
       if (url.pathname === "/shutdown" && req.method === "POST") {
         json(res, 200, { ok: true });
         setTimeout(() => this.stop().then(() => process.exit(0)), 50);
@@ -784,6 +824,8 @@ export class AgentManagerDaemon {
 
   syncActiveThreads() {
     try {
+      this.#refreshDocPeerFacts();
+      void this.#probeDocDiscoveredPeers();
       const threads = discoverThreads();
       this.#applyThreadSync(threads);
       this.log("sync.threads.complete", { count: threads.length, source: "native-thread-discovery" });
@@ -1000,6 +1042,22 @@ export class AgentManagerDaemon {
     const strict = !existingMessage && body?.strict === true;
     const messageType = existingMessage ? existingMessage.messageType : (body?.messageType || null);
 
+    if (targetAgentObj?.route && String(targetAgentObj.route).startsWith("peer:")) {
+      if (messageType === GUI_TEST_MESSAGE_TYPE) {
+        const failed = this.#buildFailedMessage(body, targetAgent, "remote mirrored agents do not support GUI round-trip tests yet; use remote-observe diagnostics");
+        if (failed.messageType === GUI_TEST_MESSAGE_TYPE) appendTestEvent(failed.correlationId, "failed", { error: failed.error, outbound: failed });
+        return { ok: false, delivered: false, queued: false, error: failed.error, message: failed };
+      }
+      return this.#sendRemoteMirrorMessage({
+        body,
+        existingMessage,
+        targetAgent,
+        targetAgentObj,
+        strict,
+        messageType,
+      });
+    }
+
     if ((targetAgentObj && MAILBOX_ONLY_THREAD_SOURCES.has(targetAgentObj.threadSource)) || (!targetAgentObj && (targetAgent === "operator" || targetAgent === "windows-gui"))) {
       const isGuiTestReply = messageType === GUI_TEST_REPLY_MESSAGE_TYPE && targetAgent === CAM_TEST_MAILBOX_AGENT;
       const message = existingMessage || {
@@ -1024,6 +1082,14 @@ export class AgentManagerDaemon {
         if (isGuiTestReply) {
           appendTestEvent(message.correlationId, "reply_received", { inbound: message });
         }
+        this.#ingestDiscoveryEvidence({
+          targetPeerName: null,
+          source: "mailbox",
+          body: message.body,
+          sourceAgent: message.sourceAgent,
+          correlationId: message.correlationId,
+          messageType: message.messageType,
+        });
       }
       this.log(isGuiTestReply ? "gui_test.reply.received" : "mailbox_only_target.inbox.received", { targetAgent, messageId: message.messageId, sourceAgent: message.sourceAgent });
       return { delivered: false, queued: false, received: true, message };
@@ -1311,6 +1377,65 @@ export class AgentManagerDaemon {
     }
   }
 
+  async #sendRemoteMirrorMessage({ body, existingMessage, targetAgent, targetAgentObj, strict, messageType }) {
+    const peerName = String(targetAgentObj.route || "").slice("peer:".length);
+    const peer = getPeer(this.config, peerName);
+    if (!peer) {
+      const failed = this.#buildFailedMessage(body, targetAgent, `unknown remote peer: ${peerName}`);
+      return { ok: false, delivered: false, queued: false, error: failed.error, message: failed };
+    }
+    const remoteRoot = await this.resolveRemoteRoot(peerName);
+    const message = existingMessage || {
+      messageId: crypto.randomUUID(),
+      correlationId: body?.correlationId || null,
+      sourceAgent: body?.sourceAgent || "operator",
+      targetAgent,
+      sourceNode: this.#trustedSourceNode(body?.sourceAgent, body?.sourceNode),
+      sourceRoute: this.#trustedSourceRoute(body?.sourceAgent),
+      targetNode: targetAgentObj.remoteNodeName || peerName,
+      timestamp: new Date().toISOString(),
+      body: body?.message || "",
+      messageType,
+      delivery: "pending",
+    };
+    const result = await this.#sshRunCamSend(peer, remoteRoot, {
+      targetAgent: targetAgentObj.remoteAgentName || targetAgent,
+      message: message.body,
+      sourceAgent: message.sourceAgent,
+      sourceNode: message.sourceNode,
+      correlationId: message.correlationId,
+      messageType: message.messageType,
+      strict,
+    });
+    if (!result.ok) {
+      message.delivery = strict ? "failed" : "queued";
+      message.error = result.error;
+      appendEvent(strict ? "message.failed.remote" : "message.queued.remote", {
+        peerName,
+        targetAgent,
+        remoteAgentName: targetAgentObj.remoteAgentName || targetAgent,
+        error: result.error,
+      });
+      if (strict) {
+        return { ok: false, delivered: false, queued: false, error: result.error, message };
+      }
+      this.queueMessage(message);
+      return { delivered: false, queued: true, message };
+    }
+    message.delivery = "delivered";
+    message.remoteDelivery = "ssh-remote-send";
+    message.remotePeerName = peerName;
+    message.remoteAgentName = targetAgentObj.remoteAgentName || targetAgent;
+    appendEvent("message.delivered.remote", {
+      peerName,
+      targetAgent,
+      remoteAgentName: targetAgentObj.remoteAgentName || targetAgent,
+      messageId: message.messageId,
+      correlationId: message.correlationId || null,
+    });
+    return { delivered: true, queued: false, message };
+  }
+
   #runtimeSettings(agent) {
     const settings = {};
     if (agent.model) settings.model = agent.model;
@@ -1334,12 +1459,808 @@ export class AgentManagerDaemon {
     }
   }
 
-  async resolveRemoteRoot() {
+  async resolveRemoteRoot(peerName) {
+    const peer = getPeer(this.config, peerName);
+    if (!peer) return null;
+    if (peer.remoteRoot && peer.remoteRoot !== "auto") return peer.remoteRoot;
+    if (peer.remoteSync?.remoteRoot) return peer.remoteSync.remoteRoot;
+    const username = this.#sshUsername(peer);
+    if (!username) return null;
+    const candidates = [
+      ...DEFAULT_REMOTE_ROOTS.map((root) => root.replace("/ubuntu/", `/${username}/`)),
+    ];
+    for (const candidate of [...new Set(candidates.filter(Boolean))]) {
+      this.log("peer.remote_root.probe", { peerName, candidate });
+      const result = await this.#probeRemoteCommand(peer, `test -f ${sq(path.posix.join(candidate, "bin", "cam.js"))}`);
+      if (result.ok) {
+        upsertPeer(this.config, peerName, {
+          ...peer,
+          remoteRoot: candidate,
+        });
+        this.log("peer.remote_root.verified", { peerName, remoteRoot: candidate });
+        return candidate;
+      }
+    }
     return null;
   }
 
-  async syncPeer() {
-    return;
+  async syncPeer(peerName = null) {
+    if (peerName) {
+      const peer = getPeer(this.config, peerName);
+      if (!peer) {
+        return { ok: false, error: `unknown peer: ${peerName}` };
+      }
+      return this.#syncSinglePeer(peer);
+    }
+    return this.#syncKnownPeers();
+  }
+
+  async #syncKnownPeers() {
+    const peers = listPeers(this.config).filter((peer) => peer?.transport === "ssh" && String(peer?.ssh || "").includes("@") && peer?.key);
+    const results = [];
+    for (const peer of peers) {
+      results.push(await this.#syncSinglePeer(peer));
+    }
+    return {
+      ok: results.every((row) => row.ok !== false),
+      peers: results,
+    };
+  }
+
+  async #syncSinglePeer(peer) {
+    const peerName = peer.name;
+    const remoteRoot = await this.resolveRemoteRoot(peerName);
+    const remoteStateRoot = await this.#resolveRemoteStateRoot(peer);
+    if (!remoteStateRoot) {
+      const error = "unable to locate remote CAM state root (.qexow-cam or .codex-agent-manager)";
+      this.log("peer.sync.failed", { peerName, error });
+      return { ok: false, peerName, error };
+    }
+    const registryText = await this.#sshReadFile(peer, path.posix.join(remoteStateRoot, "agents.json"));
+    if (!registryText.ok) {
+      this.log("peer.sync.failed", { peerName, error: registryText.error });
+      return { ok: false, peerName, error: registryText.error };
+    }
+    let remoteRegistry;
+    try {
+      remoteRegistry = JSON.parse(registryText.text);
+    } catch (error) {
+      this.log("peer.sync.failed", { peerName, error: `invalid remote registry JSON: ${error.message}` });
+      return { ok: false, peerName, error: `invalid remote registry JSON: ${error.message}` };
+    }
+    const result = this.#ingestRemotePeerRegistry(peer, remoteRegistry, remoteRoot);
+    upsertPeer(this.config, peerName, {
+      ...getPeer(this.config, peerName),
+      remoteSync: {
+        syncedAt: new Date().toISOString(),
+        remoteRoot: remoteRoot || null,
+        remoteStateRoot,
+        remoteNodeName: remoteRegistry?.nodeName || null,
+        mirroredAgents: result.mirroredAgents,
+      },
+    });
+    this.log("peer.sync.complete", {
+      peerName,
+      mirroredAgents: result.mirroredAgents.length,
+      remoteRoot: remoteRoot || null,
+      remoteNodeName: remoteRegistry?.nodeName || null,
+    });
+    appendEvent("peer.sync.complete", {
+      peerName,
+      mirroredAgents: result.mirroredAgents.length,
+      remoteRoot: remoteRoot || null,
+      remoteNodeName: remoteRegistry?.nodeName || null,
+    });
+    return {
+      ok: true,
+      peerName,
+      remoteRoot: remoteRoot || null,
+      remoteStateRoot,
+      remoteNodeName: remoteRegistry?.nodeName || null,
+      mirroredAgents: result.mirroredAgents,
+    };
+  }
+
+  #ingestRemotePeerRegistry(peer, remoteRegistry, remoteRoot) {
+    const remoteAgents = Object.values(remoteRegistry?.agents || {});
+    const mirroredAgents = [];
+    for (const remoteAgent of remoteAgents) {
+      if (!remoteAgent?.name) continue;
+      const mirrorName = this.#remoteMirrorName(peer.name, remoteAgent.name);
+      const mirrored = upsertAgent(this.config, {
+        name: mirrorName,
+        node: remoteRegistry?.nodeName || peer.name,
+        cwd: remoteAgent.cwd || remoteRoot || process.cwd(),
+        threadId: remoteAgent.threadId ?? null,
+        activeTurnId: remoteAgent.activeTurnId ?? null,
+        model: remoteAgent.model ?? null,
+        modelProvider: remoteAgent.modelProvider ?? null,
+        effort: remoteAgent.effort ?? null,
+        serviceTier: remoteAgent.serviceTier ?? null,
+        status: remoteAgent.status || "remote",
+        threadSource: "remote-cam",
+        sourceHost: peer.name,
+        hostKind: "remote",
+        transport: "ssh",
+        route: `peer:${peer.name}`,
+        remotePeerName: peer.name,
+        remoteAgentName: remoteAgent.name,
+        remoteNodeName: remoteRegistry?.nodeName || peer.name,
+        remoteRoot: remoteRoot || null,
+        discoveredBy: "remote-cam-sync",
+        discoveredAt: new Date().toISOString(),
+      });
+      mirroredAgents.push({
+        localName: mirrorName,
+        remoteAgentName: remoteAgent.name,
+        threadId: remoteAgent.threadId ?? null,
+        status: remoteAgent.status || "remote",
+      });
+      this.threadToAgent.delete(remoteAgent.threadId);
+      void mirrored;
+    }
+    return { mirroredAgents };
+  }
+
+  #remoteMirrorName(peerName, remoteAgentName) {
+    return `${peerName}::${remoteAgentName}`;
+  }
+
+  async #sshReadFile(peer, remotePath) {
+    return this.#probeRemoteCommand(peer, `cat ${sq(remotePath)}`, 15000);
+  }
+
+  async #resolveRemoteStateRoot(peer) {
+    const username = this.#sshUsername(peer) || "ubuntu";
+    const homeRoot = username === "root" ? "/root" : `/home/${username}`;
+    const candidates = [
+      path.posix.join(homeRoot, ".qexow-cam"),
+      path.posix.join(homeRoot, ".codex-agent-manager"),
+    ];
+    for (const candidate of candidates) {
+      this.log("peer.remote_state_root.probe", {
+        peerName: peer.name,
+        candidate,
+      });
+      const result = await this.#probeRemoteCommand(peer, `test -f ${sq(path.posix.join(candidate, "agents.json"))}`);
+      if (result.ok) {
+        this.log("peer.remote_state_root.verified", {
+          peerName: peer.name,
+          remoteStateRoot: candidate,
+        });
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  async #sshRunCamSend(peer, remoteRoot, payload) {
+    const root = remoteRoot || this.#remoteManagerRoot(peer);
+    const command = [
+      `cd ${sq(root)}`,
+      "&&",
+      "node",
+      sq("./bin/cam.js"),
+      "send",
+      sq(payload.targetAgent),
+      sq(payload.message),
+      "--from",
+      sq(payload.sourceAgent || "operator"),
+      "--source-node",
+      sq(payload.sourceNode || this.config.nodeName),
+      ...(payload.correlationId ? ["--correlation-id", sq(payload.correlationId)] : []),
+      ...(payload.messageType ? ["--message-type", sq(payload.messageType)] : []),
+      ...(payload.strict ? ["--strict"] : []),
+    ].join(" ");
+    this.log("peer.remote_send.command", {
+      peerName: peer.name,
+      command,
+    });
+    return this.#probeRemoteCommand(peer, command, 20000);
+  }
+
+  #remoteManagerRoot(peer) {
+    if (peer?.remoteRoot && peer.remoteRoot !== "auto") return peer.remoteRoot;
+    if (peer?.remoteSync?.remoteRoot) return peer.remoteSync.remoteRoot;
+    const username = this.#sshUsername(peer) || "ubuntu";
+    if (username === "root") return "/root/codex-agent-manager";
+    return `/home/${username}/codex-agent-manager`;
+  }
+
+  #sshUsername(peer) {
+    const ssh = String(peer?.ssh || "");
+    if (!ssh.includes("@")) return null;
+    return ssh.split("@")[0] || null;
+  }
+
+  async #probeRemoteCommand(peer, remoteCommand, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+      const ssh = String(peer?.ssh || "");
+      const key = String(peer?.key || "");
+      if (!ssh || !ssh.includes("@") || !key) {
+        resolve({ ok: false, error: "peer is missing ssh or key" });
+        return;
+      }
+      const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+      const child = spawn("ssh", [
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", `UserKnownHostsFile=${nullDevice}`,
+        "-o", "ConnectTimeout=5",
+        "-i", key,
+        ssh,
+        remoteCommand,
+      ], {
+        windowsHide: true,
+        shell: false,
+      });
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        resolve({ ok: false, error: "timeout" });
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: error.message });
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          resolve({ ok: false, error: stderr.trim() || `ssh exit ${code}` });
+          return;
+        }
+        resolve({ ok: true, text: stdout, stderr: stderr.trim() || null });
+      });
+    });
+  }
+
+  async #discoverPeer(body) {
+    const peerName = String(body?.peerName || "").trim();
+    const targetAgent = String(body?.targetAgent || "").trim();
+    const waitSeconds = Math.max(5, Math.min(Number(body?.waitSeconds || 45), 120));
+    if (!peerName) throw new Error("peerName is required");
+    if (!targetAgent) throw new Error("targetAgent is required");
+
+    const correlationId = crypto.randomUUID();
+    const outbound = await this.#sendMessage({
+      targetAgent,
+      sourceAgent: CAM_TEST_MAILBOX_AGENT,
+      sourceNode: this.config.nodeName,
+      correlationId,
+      messageType: NODE_DISCOVERY_REQUEST_TYPE,
+      strict: true,
+      message: buildNodeDiscoveryPrompt({ peerName }),
+    });
+
+    if (!outbound?.delivered) {
+      return {
+        ok: false,
+        peerName,
+        targetAgent,
+        correlationId,
+        error: outbound?.error || "discovery request was not delivered",
+        outbound,
+      };
+    }
+
+    const deadline = Date.now() + waitSeconds * 1000;
+    let mailboxEvidence = null;
+    let transcriptEvidence = null;
+
+    while (Date.now() < deadline && (!mailboxEvidence || !transcriptEvidence)) {
+      if (!mailboxEvidence) {
+        mailboxEvidence = this.#findMailboxDiscoveryEvidence(peerName, targetAgent, correlationId);
+      }
+      if (!transcriptEvidence) {
+        transcriptEvidence = await this.#readTranscriptDiscoveryEvidence(peerName, targetAgent);
+      }
+      if (mailboxEvidence && transcriptEvidence) break;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    const peer = getPeer(this.config, peerName);
+    const agreement = this.#compareDiscoveryEvidence(mailboxEvidence?.parsed?.data, transcriptEvidence?.parsed?.data);
+
+    if (!mailboxEvidence && !transcriptEvidence) {
+      this.log("peer.discovery.timeout", { peerName, targetAgent, correlationId, waitSeconds });
+      appendEvent("peer.discovery.timeout", { peerName, targetAgent, correlationId, waitSeconds });
+      return {
+        ok: false,
+        peerName,
+        targetAgent,
+        correlationId,
+        error: "no discovery evidence received before timeout",
+        outbound,
+      };
+    }
+
+    return {
+      ok: true,
+      peerName,
+      targetAgent,
+      correlationId,
+      outbound,
+      mailboxEvidence,
+      transcriptEvidence,
+      agreement,
+      peer,
+    };
+  }
+
+  #findMailboxDiscoveryEvidence(peerName, targetAgent, correlationId) {
+    const rows = readMailbox(CAM_TEST_MAILBOX_AGENT).filter((row) =>
+      row.correlationId === correlationId &&
+      row.sourceAgent === targetAgent &&
+      row.delivery === "received",
+    );
+    for (const row of rows.reverse()) {
+      const parsed = parseNodeDiscoveryEvidence(row.body || "");
+      if (!parsed.ok) continue;
+      this.#ingestDiscoveryEvidence({
+        targetPeerName: peerName,
+        source: "mailbox",
+        body: row.body,
+        sourceAgent: row.sourceAgent,
+        correlationId,
+        messageType: row.messageType,
+      });
+      return { message: row, parsed };
+    }
+    return null;
+  }
+
+  async #readTranscriptDiscoveryEvidence(peerName, targetAgent) {
+    const agent = getAgent(this.config, targetAgent);
+    if (!agent?.threadId) return null;
+    let thread;
+    try {
+      thread = await this.appServer.request("thread/read", {
+        threadId: agent.threadId,
+        includeTurns: true,
+      }, 60000);
+    } catch {
+      return null;
+    }
+    const texts = this.#collectThreadTexts(thread);
+    for (const text of texts.reverse()) {
+      const parsed = parseNodeDiscoveryEvidence(text);
+      if (!parsed.ok) continue;
+      this.#ingestDiscoveryEvidence({
+        targetPeerName: peerName,
+        source: "transcript",
+        body: text,
+        sourceAgent: targetAgent,
+        correlationId: null,
+        messageType: null,
+      });
+      return { text, parsed };
+    }
+    return null;
+  }
+
+  #collectThreadTexts(threadResult) {
+    const thread = threadResult?.thread || threadResult;
+    const texts = [];
+    for (const turn of Array.isArray(thread?.turns) ? thread.turns : []) {
+      for (const item of Array.isArray(turn.items) ? turn.items : []) {
+        for (const text of this.#extractDiscoveryStrings(item)) {
+          texts.push(text);
+        }
+      }
+    }
+    return texts;
+  }
+
+  #extractDiscoveryStrings(value, out = []) {
+    if (typeof value === "string") {
+      if (value.includes(NODE_DISCOVERY_MARKER)) out.push(value);
+      return out;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) this.#extractDiscoveryStrings(item, out);
+      return out;
+    }
+    if (value && typeof value === "object") {
+      for (const nested of Object.values(value)) this.#extractDiscoveryStrings(nested, out);
+    }
+    return out;
+  }
+
+  #ingestDiscoveryEvidence({ targetPeerName, source, body, sourceAgent, correlationId, messageType }) {
+    const parsed = parseNodeDiscoveryEvidence(body || "");
+    if (!parsed.ok) return null;
+
+    const peerName = targetPeerName || parsed.data.peerName || sourceAgent || null;
+    if (!peerName) return null;
+
+    const existing = getPeer(this.config, peerName) || {};
+    const next = {
+      ...existing,
+      name: peerName,
+      discoveryPrimary: existing.discoveryPrimary || "installer",
+      observedHostname: parsed.data.hostname || existing.observedHostname || null,
+      observedWhoami: parsed.data.whoami || existing.observedWhoami || null,
+      observedPrivateIps: this.#mergeArrays(existing.observedPrivateIps, parsed.data.privateIps),
+      observedPublicIp: parsed.data.publicIp || existing.observedPublicIp || null,
+      camNodeName: parsed.data.camNodeName || existing.camNodeName || null,
+      camBindHost: parsed.data.camBindHost || existing.camBindHost || null,
+      camPort: parsed.data.camPort || existing.camPort || null,
+      camConfigPath: parsed.data.camConfigPath || existing.camConfigPath || null,
+      camRegistryPath: parsed.data.camRegistryPath || existing.camRegistryPath || null,
+      camRoot: parsed.data.camRoot || existing.camRoot || null,
+      camOk: parsed.data.camOk ?? existing.camOk ?? null,
+      discoveryEvidence: {
+        ...(existing.discoveryEvidence || {}),
+        [source]: {
+          parsedAt: new Date().toISOString(),
+          parserMode: parsed.mode,
+          sourceAgent,
+          correlationId,
+          messageType,
+          raw: body,
+          data: parsed.data,
+        },
+      },
+      lastDiscoveryAt: new Date().toISOString(),
+    };
+
+    const conflicts = this.#peerDiscoveryConflicts(existing, parsed.data);
+    const peer = upsertPeer(this.config, peerName, next);
+    if (source !== "installer") {
+      this.log("peer.discovery.fallback.write", {
+        peerName,
+        source,
+        parserMode: parsed.mode,
+        correlationId,
+        messageType,
+      });
+      appendEvent("peer.discovery.fallback.write", {
+        peerName,
+        source,
+        parserMode: parsed.mode,
+        correlationId,
+        messageType,
+      });
+    }
+    if (conflicts.length) {
+      this.log("peer.discovery.conflict", { peerName, source, conflicts });
+      appendEvent("peer.discovery.conflict", { peerName, source, conflicts });
+    }
+    return peer;
+  }
+
+  #mergeArrays(left, right) {
+    return [...new Set([...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])].filter(Boolean))];
+  }
+
+  #refreshDocPeerFacts() {
+    try {
+      const rows = discoverPeerFactsFromMarkdown({ codexHome: this.config.codexHome });
+      const knownPeers = this.#canonicalPeerNames();
+      const aliases = new Map([
+        ["production-frontend", "prod-frontend"],
+        ["production-backend", "prod-backend"],
+        ["racknerd-vps-webmail", "racknerd-vpn-codex"],
+      ]);
+      for (const row of rows) {
+        const targetName = knownPeers.has(row.peerName) ? row.peerName : (aliases.get(row.peerName) || null);
+        if (!targetName) continue;
+        const existing = getPeer(this.config, targetName) || null;
+        const peer = upsertPeer(this.config, targetName, {
+          ...(existing || {}),
+          name: targetName,
+          discovered: existing?.discovered ?? false,
+          docDiscovery: {
+            files: row.files,
+            displaySections: row.displaySections,
+            candidateIps: row.candidateIps,
+            candidatePrivateIps: row.candidatePrivateIps,
+            candidateSshTargets: row.candidateSshTargets,
+            candidateHostnames: row.candidateHostnames,
+            sourceLines: row.sourceLines,
+            scrapedAt: new Date().toISOString(),
+          },
+        });
+        if (!existing || JSON.stringify(existing.docDiscovery || null) !== JSON.stringify(peer.docDiscovery || null)) {
+          this.log("peer.discovery.fallback.docs", {
+            peerName: targetName,
+            files: row.files.length,
+            candidateIps: row.candidateIps,
+            candidateSshTargets: row.candidateSshTargets,
+            probeEligible: !!peer.key,
+          });
+          appendEvent("peer.discovery.fallback.docs", {
+            peerName: targetName,
+            files: row.files.length,
+            candidateIps: row.candidateIps,
+            candidateSshTargets: row.candidateSshTargets,
+            probeEligible: !!peer.key,
+          });
+        }
+      }
+      this.#pruneNonCanonicalPeers(knownPeers);
+    } catch (error) {
+      this.log("peer.discovery.docs.failed", { error: error.message });
+    }
+  }
+
+  #canonicalPeerNames() {
+    const names = new Set([
+      "backend",
+      "frontend",
+      "dashboard",
+      "searchbox",
+      "copilotkit",
+      "multi-site",
+      "prod-frontend",
+      "prod-backend",
+      "racknerd-vpn-codex",
+      "frontend-fresh",
+    ]);
+    const registry = loadRegistry(this.config);
+    for (const [name, peer] of Object.entries(registry.peers || {})) {
+      if (peer?.codexHostId || peer?.discovered === true || peer?.remoteSync?.syncedAt) names.add(name);
+    }
+    return names;
+  }
+
+  #pruneNonCanonicalPeers(canonicalNames) {
+    const registry = loadRegistry(this.config);
+    let changed = false;
+    for (const [name, peer] of Object.entries(registry.peers || {})) {
+      if (canonicalNames.has(name)) continue;
+      delete registry.peers[name];
+      changed = true;
+      this.log("peer.discovery.docs.pruned", { peerName: name, reason: "non-canonical-peer" });
+      appendEvent("peer.discovery.docs.pruned", { peerName: name, reason: "non-canonical-peer" });
+    }
+    if (changed) saveRegistry(registry);
+  }
+
+  #restorePeerTransportFromBackups() {
+    try {
+      const current = loadRegistry(this.config);
+      const candidates = this.#backupRegistryFiles();
+      if (!candidates.length) return;
+      let changed = false;
+      for (const file of candidates) {
+        let backup;
+        try {
+          backup = JSON.parse(fs.readFileSync(file, "utf8"));
+        } catch {
+          continue;
+        }
+        const peers = backup?.peers || {};
+        for (const [name, oldPeer] of Object.entries(peers)) {
+          if (!oldPeer || typeof oldPeer !== "object") continue;
+          const live = current.peers?.[name];
+          if (!live) continue;
+          const needsKey = !live.key && !!oldPeer.key;
+          const needsSsh = (!live.ssh || !String(live.ssh).includes("@")) && !!oldPeer.ssh && String(oldPeer.ssh).includes("@");
+          const needsTransport = live.transport === "codex-managed" && oldPeer.transport === "ssh";
+          if (!needsKey && !needsSsh && !needsTransport) continue;
+          current.peers[name] = {
+            ...live,
+            transport: needsTransport ? oldPeer.transport : live.transport,
+            ssh: needsSsh ? oldPeer.ssh : live.ssh,
+            key: needsKey ? oldPeer.key : live.key,
+            recoveredTransportFromBackup: {
+              file,
+              recoveredAt: new Date().toISOString(),
+            },
+          };
+          changed = true;
+          this.log("peer.transport.recovered_from_backup", {
+            peerName: name,
+            file,
+            recoveredKey: needsKey,
+            recoveredSsh: needsSsh,
+            recoveredTransport: needsTransport,
+          });
+          appendEvent("peer.transport.recovered_from_backup", {
+            peerName: name,
+            file,
+            recoveredKey: needsKey,
+            recoveredSsh: needsSsh,
+            recoveredTransport: needsTransport,
+          });
+        }
+      }
+      if (changed) {
+        saveRegistry(current);
+      }
+    } catch (error) {
+      this.log("peer.transport.recovery.failed", { error: error.message });
+    }
+  }
+
+  #backupRegistryFiles() {
+    const root = paths().root;
+    const files = [];
+    const direct = fs.existsSync(root) ? fs.readdirSync(root) : [];
+    for (const name of direct) {
+      if (/^agents\.json\.bak-/i.test(name)) files.push(path.join(root, name));
+    }
+    const installBackups = path.join(root, "install-backups");
+    if (fs.existsSync(installBackups)) {
+      for (const dir of fs.readdirSync(installBackups)) {
+        const full = path.join(installBackups, dir);
+        if (!fs.statSync(full).isDirectory()) continue;
+        for (const name of fs.readdirSync(full)) {
+          if (/^agents\.json\.bak-/i.test(name)) files.push(path.join(full, name));
+        }
+      }
+    }
+    return files.sort((a, b) => {
+      try {
+        return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+      } catch {
+        return 0;
+      }
+    });
+  }
+
+  async #probeDocDiscoveredPeers() {
+    const registry = loadRegistry(this.config);
+    const keyPool = this.#registryKeyPool(registry);
+    if (!keyPool.length) {
+      this.log("peer.discovery.probe.skipped", { reason: "no_registry_keys_available" });
+      return;
+    }
+
+    for (const peer of Object.values(registry.peers || {})) {
+      if (!peer || peer.key) continue;
+      const doc = peer.docDiscovery;
+      if (!doc?.candidateIps?.length) continue;
+      const usernames = this.#candidateUsernames(peer);
+      if (!usernames.length) continue;
+      for (const ip of doc.candidateIps) {
+        for (const username of usernames) {
+          const cacheKey = `${peer.name}|${username}@${ip}|${keyPool.map((row) => row.key).join(",")}`;
+          const lastTried = this.peerProbeAttempts.get(cacheKey);
+          if (lastTried && Date.now() - lastTried < 10 * 60 * 1000) continue;
+          this.peerProbeAttempts.set(cacheKey, Date.now());
+          const verified = await this.#tryRegistryKeysAgainstTarget(keyPool, username, ip);
+          if (!verified) continue;
+          const updated = upsertPeer(this.config, peer.name, {
+            ...peer,
+            transport: "ssh",
+            ssh: `${username}@${ip}`,
+            key: verified.key,
+            docProbe: {
+              verifiedAt: new Date().toISOString(),
+              username,
+              ip,
+              recoveredFromRegistryKeyOwner: verified.owner,
+            },
+          });
+          this.log("peer.discovery.probe.verified", {
+            peerName: peer.name,
+            ssh: `${username}@${ip}`,
+            keyOwner: verified.owner,
+          });
+          appendEvent("peer.discovery.probe.verified", {
+            peerName: peer.name,
+            ssh: `${username}@${ip}`,
+            keyOwner: verified.owner,
+          });
+          break;
+        }
+        const refreshed = getPeer(this.config, peer.name);
+        if (refreshed?.key) break;
+      }
+    }
+  }
+
+  #registryKeyPool(registry) {
+    const peers = Object.values(registry?.peers || {});
+    const seen = new Set();
+    const pool = [];
+    for (const peer of peers) {
+      const key = peer?.key ? String(peer.key) : "";
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      pool.push({ owner: peer.name, key });
+    }
+    return pool;
+  }
+
+  #candidateUsernames(peer) {
+    const usernames = [];
+    const ssh = String(peer?.ssh || "");
+    if (ssh.includes("@")) usernames.push(ssh.split("@")[0]);
+    for (const target of peer?.docDiscovery?.candidateSshTargets || []) {
+      if (String(target).includes("@")) usernames.push(String(target).split("@")[0]);
+    }
+    return [...new Set(usernames.filter(Boolean))];
+  }
+
+  async #tryRegistryKeysAgainstTarget(keyPool, username, ip) {
+    for (const candidate of keyPool) {
+      const result = await this.#probeSsh(candidate.key, username, ip);
+      if (result.ok) {
+        return { ...candidate, ...result };
+      }
+    }
+    return null;
+  }
+
+  async #probeSsh(keyPath, username, ip) {
+    return new Promise((resolve) => {
+      const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+      const child = spawn("ssh", [
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", `UserKnownHostsFile=${nullDevice}`,
+        "-o", "ConnectTimeout=5",
+        "-i", keyPath,
+        `${username}@${ip}`,
+        "hostname; whoami; hostname -I",
+      ], {
+        windowsHide: true,
+        shell: false,
+      });
+
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        resolve({ ok: false, error: "timeout" });
+      }, 8000);
+
+      child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: error.message });
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          resolve({ ok: false, error: stderr.trim() || `ssh exit ${code}` });
+          return;
+        }
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        resolve({
+          ok: true,
+          hostname: lines[0] || null,
+          whoami: lines[1] || null,
+          privateIps: lines[2] ? lines[2].split(/\s+/).filter(Boolean) : [],
+          raw: stdout.trim(),
+        });
+      });
+    });
+  }
+
+  #peerDiscoveryConflicts(existing, incoming) {
+    const conflicts = [];
+    if (existing?.observedPublicIp && incoming.publicIp && existing.observedPublicIp !== incoming.publicIp) {
+      conflicts.push({ field: "observedPublicIp", existing: existing.observedPublicIp, incoming: incoming.publicIp });
+    }
+    if (existing?.observedHostname && incoming.hostname && existing.observedHostname !== incoming.hostname) {
+      conflicts.push({ field: "observedHostname", existing: existing.observedHostname, incoming: incoming.hostname });
+    }
+    if (existing?.camNodeName && incoming.camNodeName && existing.camNodeName !== incoming.camNodeName) {
+      conflicts.push({ field: "camNodeName", existing: existing.camNodeName, incoming: incoming.camNodeName });
+    }
+    return conflicts;
+  }
+
+  #compareDiscoveryEvidence(left, right) {
+    if (!left || !right) return { compared: false, agreed: null, fields: [] };
+    const fields = [
+      ["hostname", left.hostname, right.hostname],
+      ["publicIp", left.publicIp, right.publicIp],
+      ["camNodeName", left.camNodeName, right.camNodeName],
+    ].map(([field, a, b]) => ({ field, left: a || null, right: b || null, equal: (a || null) === (b || null) }));
+    return {
+      compared: true,
+      agreed: fields.every((field) => field.equal || !field.left || !field.right),
+      fields,
+    };
   }
 }
 

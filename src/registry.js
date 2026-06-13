@@ -26,13 +26,16 @@ export function loadRegistry(config) {
         const alias = conn.alias || conn.displayName;
         if (!alias) continue;
         const existing = registry.peers[alias] || {};
+        const keepTransport = existing.transport && existing.transport !== "codex-managed";
+        const keepSsh = existing.ssh && String(existing.ssh).includes("@");
+        const keepKey = existing.key !== undefined && existing.key !== null;
         const normalized = {
           ...existing,
           name: alias,
-          transport: "codex-managed",
-          ssh: alias,
-          key: null,
-          remoteRoot: "auto",
+          transport: keepTransport ? existing.transport : "codex-managed",
+          ssh: keepSsh ? existing.ssh : alias,
+          key: keepKey ? existing.key : null,
+          remoteRoot: existing.remoteRoot || "auto",
           agents: existing.agents || [],
           enrolledAt: existing.enrolledAt || new Date().toISOString(),
           discovered: true,
@@ -61,12 +64,40 @@ export function saveRegistry(registry) {
   writeJsonAtomic(paths().registry, registry);
 }
 
+export function getPeer(config, name) {
+  return loadRegistry(config).peers?.[name] || null;
+}
+
+export function listPeers(config) {
+  const peers = loadRegistry(config).peers || {};
+  return Object.values(peers).sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+}
+
+export function upsertPeer(config, name, partial = {}) {
+  if (!name) throw new Error("peer name is required");
+  const registry = loadRegistry(config);
+  registry.peers ||= {};
+  const existing = registry.peers[name] || {};
+  const peer = {
+    ...existing,
+    ...partial,
+    name,
+    updatedAt: new Date().toISOString(),
+    enrolledAt: existing.enrolledAt || partial.enrolledAt || new Date().toISOString(),
+  };
+  registry.peers[name] = peer;
+  saveRegistry(registry);
+  return peer;
+}
+
 export function upsertAgent(config, partial) {
   if (!partial?.name) throw new Error("agent name is required");
   const registry = loadRegistry(config);
   const now = new Date().toISOString();
   const existing = registry.agents[partial.name] || {};
   const agent = {
+    ...existing,
+    ...partial,
     name: partial.name,
     node: partial.node || registry.nodeName || config.nodeName,
     cwd: partial.cwd || existing.cwd || process.cwd(),
