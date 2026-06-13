@@ -32,6 +32,9 @@ import { paths, writeJsonAtomic, readJson } from "./paths.js";
 import { logEvent, enforceRetention } from "./logger.js";
 import { bootstrapAntigravity } from "./antigravity.js";
 
+const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
+const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
+
 export function showWindowsAlert(title, message, iconType = "error") {
   // Completely disabled by Security Block 5: Eradication of External Scripts
   // We do not use VBScript or mshta.exe ever.
@@ -247,6 +250,7 @@ export class AgentManagerDaemon {
     bootstrapAntigravity((type, payload) => this.log(type, payload));
 
     await this.appServer.start();
+    this.#ensureBuiltinMailboxAgents();
     for (const agent of listAgents(this.config)) {
       if (agent.threadId) this.threadToAgent.set(agent.threadId, agent.name);
     }
@@ -970,6 +974,23 @@ export class AgentManagerDaemon {
     return this.appServer.request("thread/start", base, 60000);
   }
 
+  #ensureBuiltinMailboxAgents() {
+    const agent = upsertAgent(this.config, {
+      name: CAM_TEST_MAILBOX_AGENT,
+      node: this.config.nodeName,
+      cwd: process.cwd(),
+      threadId: null,
+      activeTurnId: null,
+      status: "idle",
+      threadSource: "mailbox",
+    });
+    this.log("mailbox_only_target.registered", {
+      name: agent.name,
+      node: agent.node,
+      threadSource: agent.threadSource,
+    });
+  }
+
   async #sendMessage(body, existingMessage = null) {
     if (!existingMessage && !body?.targetAgent) throw new Error("targetAgent is required");
     if (!existingMessage && !body?.message) throw new Error("message is required");
@@ -977,7 +998,7 @@ export class AgentManagerDaemon {
     const targetAgent = existingMessage ? existingMessage.targetAgent : body.targetAgent;
     const targetAgentObj = getAgent(this.config, targetAgent);
 
-    if (!targetAgentObj && (targetAgent === "operator" || targetAgent === "windows-gui")) {
+    if ((targetAgentObj && MAILBOX_ONLY_THREAD_SOURCES.has(targetAgentObj.threadSource)) || (!targetAgentObj && (targetAgent === "operator" || targetAgent === "windows-gui"))) {
       const message = existingMessage || {
         messageId: crypto.randomUUID(),
         correlationId: body?.correlationId || null,
@@ -990,7 +1011,7 @@ export class AgentManagerDaemon {
         delivery: "queued",
       };
       message.delivery = "queued";
-      message.targetNode = this.config.nodeName;
+      message.targetNode = targetAgentObj?.node || this.config.nodeName;
       delete message.error;
       if (!existingMessage) {
         this.queueMessage(message);

@@ -124,6 +124,7 @@ namespace QexowCamGui
         private readonly Button testButton;
         private readonly CheckBox showArchivedCheckBox;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
+        private const string CamTestMailboxAgent = "CAM test, Kexau CAM test suite mailbox";
         private Dictionary<string, Dictionary<string, object>> activeThreadMetadata = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
         private bool daemonStartAttempted = false;
 
@@ -344,10 +345,10 @@ namespace QexowCamGui
                     string correlationId = Guid.NewGuid().ToString("N");
                     Dictionary<string, object> payload = new Dictionary<string, object>();
                     payload["targetAgent"] = agentName;
-                    payload["sourceAgent"] = "windows-gui";
+                    payload["sourceAgent"] = CamTestMailboxAgent;
                     payload["sourceNode"] = Environment.MachineName;
                     payload["correlationId"] = correlationId;
-                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". Reply by sending a CAM message to targetAgent \"windows-gui\". Do not only answer in this chat. Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
+                    payload["message"] = "CAM GUI round-trip test " + correlationId + ". Reply by sending a CAM message to targetAgent \"" + CamTestMailboxAgent + "\". Do not only answer in this chat. Your reply body must include CAM_GUI_TEST_RESPONSE " + correlationId + " plus your agent name, node name, and current status.";
 
                     Dictionary<string, object> sendResult = ApiPost("/send", payload);
                     string turnId = NestedValue(sendResult, "message", "turnId");
@@ -355,7 +356,7 @@ namespace QexowCamGui
                     {
                         AppendOutput("STATE sent  delivery accepted");
                         AppendOutput("STATE wait  turnId=" + turnId + " testId=" + correlationId);
-                        AppendOutput("STATE wait  waiting for CAM inbox reply to windows-gui, not reading session logs");
+                        AppendOutput("STATE wait  waiting for CAM inbox reply to " + CamTestMailboxAgent + ", not reading session logs");
                     });
 
                     string response = WaitForMailboxResponse(agentName, correlationId, 90000);
@@ -398,10 +399,10 @@ namespace QexowCamGui
                     string mark = spinner[pollCount % spinner.Length];
                     InvokeUi(delegate
                     {
-                        AppendOutput("STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading windows-gui CAM inbox...");
+                        AppendOutput("STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading " + CamTestMailboxAgent + " CAM inbox...");
                     });
 
-                    Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=windows-gui&wait=5");
+                    Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=" + Uri.EscapeDataString(CamTestMailboxAgent) + "&wait=5");
                     string response = FindMailboxResponse(inboxResult, agentName, correlationId);
                     if (!String.IsNullOrWhiteSpace(response)) return response;
                     lastSummary = SummarizeInbox(inboxResult);
@@ -455,8 +456,8 @@ namespace QexowCamGui
         private string SummarizeInbox(Dictionary<string, object> inboxResult)
         {
             ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
-            if (messages == null) return "windows-gui inbox unreadable";
-            return "windows-gui inbox messages=" + messages.Count;
+            if (messages == null) return CamTestMailboxAgent + " inbox unreadable";
+            return CamTestMailboxAgent + " inbox messages=" + messages.Count;
         }
 
         private static string NestedValue(Dictionary<string, object> map, params string[] keys)
