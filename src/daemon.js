@@ -12,9 +12,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { execFile } from "node:child_process";
 import { AppServerClient, textInput } from "./app-server.js";
 import { ensureLocalToken, loadConfig } from "./config.js";
+import { discoverThreads } from "./thread-discovery.js";
 import {
   appendEvent,
   appendMailbox,
@@ -35,7 +35,7 @@ import { bootstrapAntigravity } from "./antigravity.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.30";
+const CAM_VERSION = "2.1.31";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
 const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";
@@ -773,56 +773,14 @@ export class AgentManagerDaemon {
   }
 
   syncActiveThreads() {
-    return new Promise((resolve) => {
-      const scriptPath = this.#queryThreadsScriptPath();
-      if (!scriptPath) {
-        this.log("sync.threads.failed", { error: "query_threads.py not found; refusing session_index fallback" });
-        resolve();
-        return;
-      }
-
-      const tryPython = (cmd) => {
-        execFile(cmd, [scriptPath], { env: process.env }, (error, stdout, stderr) => {
-          if (error) {
-            if (cmd === "python") {
-              tryPython("python3");
-              return;
-            }
-            this.log("sync.threads.failed", { error: error.message, stderr, source: "query_threads.py" });
-            resolve();
-            return;
-          }
-
-          try {
-            const data = JSON.parse(stdout);
-            if (data.error) {
-              this.log("sync.threads.failed", { error: data.error, source: "query_threads.py" });
-              resolve();
-              return;
-            }
-            const threads = Array.isArray(data.threads) ? data.threads : [];
-            this.#applyThreadSync(threads);
-            this.log("sync.threads.complete", { count: threads.length, source: "query_threads.py", scriptPath });
-          } catch (e) {
-            this.log("sync.threads.parse.failed", { error: e.message, stdout, source: "query_threads.py" });
-          }
-          resolve();
-        });
-      };
-
-      tryPython("python");
-    });
-  }
-
-  #queryThreadsScriptPath() {
-    const candidates = [
-      path.join(process.cwd(), "src", "query_threads.py"),
-      path.join(process.cwd(), "query_threads.py"),
-      path.join(path.dirname(process.execPath), "query_threads.py"),
-      path.join(path.dirname(process.execPath), "src", "query_threads.py"),
-      path.join(os.homedir(), "OneDrive", "Documents", "New project", "codex-agent-manager", "src", "query_threads.py"),
-    ];
-    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+    try {
+      const threads = discoverThreads();
+      this.#applyThreadSync(threads);
+      this.log("sync.threads.complete", { count: threads.length, source: "native-thread-discovery" });
+    } catch (error) {
+      this.log("sync.threads.failed", { error: error.message, source: "native-thread-discovery" });
+    }
+    return Promise.resolve();
   }
 
   #applyThreadSync(threads) {

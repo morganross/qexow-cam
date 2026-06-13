@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
 
-[assembly: AssemblyVersion("2.1.30.0")]
-[assembly: AssemblyFileVersion("2.1.30.0")]
-[assembly: AssemblyInformationalVersion("2.1.30")]
+[assembly: AssemblyVersion("2.1.31.0")]
+[assembly: AssemblyFileVersion("2.1.31.0")]
+[assembly: AssemblyInformationalVersion("2.1.31")]
 
 namespace QexowCamGui
 {
@@ -731,132 +731,28 @@ namespace QexowCamGui
 
         private HashSet<string> LoadActiveThreadIds()
         {
-            HashSet<string> ids = LoadActiveThreadIdsFromClassifier();
-            if (ids.Count > 0) return ids;
-            log("active-filter failed reason=robust-classifier-unavailable");
-            return ids;
-        }
-
-        private HashSet<string> LoadActiveThreadIdsFromClassifier()
-        {
             HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            Dictionary<string, Dictionary<string, object>> metadata = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
-            string script = FindQueryThreadsScript();
-            if (String.IsNullOrWhiteSpace(script))
-            {
-                log("active-classifier-skipped reason=query_threads.py-not-found");
-                return ids;
-            }
-
+            activeThreadMetadata = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "python";
-                psi.Arguments = "\"" + script.Replace("\"", "\\\"") + "\"";
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.RedirectStandardOutput = true;
-                psi.RedirectStandardError = true;
-                using (Process process = Process.Start(psi))
+                Dictionary<string, object> response = ApiGet("/agents");
+                if (response != null && response.ContainsKey("agents") && response["agents"] is ArrayList)
                 {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    process.WaitForExit(10000);
-                    if (!process.HasExited)
+                    foreach (object row in (ArrayList)response["agents"])
                     {
-                        try { process.Kill(); } catch {}
-                        log("active-classifier-error timeout");
-                        return ids;
+                        Dictionary<string, object> agent = row as Dictionary<string, object>;
+                        if (agent == null) continue;
+                        string threadId = Value(agent, "threadId");
+                        if (String.IsNullOrWhiteSpace(threadId)) continue;
+                        ids.Add(threadId);
+                        activeThreadMetadata[threadId] = agent;
                     }
-                    if (process.ExitCode != 0)
-                    {
-                        log("active-classifier-error " + error.Trim());
-                        return ids;
-                    }
-
-                    Dictionary<string, object> result = json.Deserialize<Dictionary<string, object>>(output);
-                    if (result != null && result.ContainsKey("threads") && result["threads"] is ArrayList)
-                    {
-                        ArrayList threads = (ArrayList)result["threads"];
-                        foreach (object row in threads)
-                        {
-                            Dictionary<string, object> thread = row as Dictionary<string, object>;
-                            if (thread == null) continue;
-                            string id = Value(thread, "id");
-                            if (!String.IsNullOrWhiteSpace(id))
-                            {
-                                ids.Add(id);
-                                metadata[id] = thread;
-                            }
-                        }
-                        activeThreadMetadata = metadata;
-                        log("active-classifier-loaded count=" + ids.Count + " script=\"" + script + "\"");
-                    }
+                    log("active-classifier-loaded count=" + ids.Count + " source=daemon-registry");
                 }
             }
             catch (Exception ex)
             {
-                log("active-classifier-exception " + ex.Message);
-            }
-            return ids;
-        }
-
-        private string FindQueryThreadsScript()
-        {
-            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
-            string[] candidates = new string[]
-            {
-                Path.Combine(exeDir, "query_threads.py"),
-                Path.Combine(exeDir, "src", "query_threads.py"),
-                Path.Combine(Environment.CurrentDirectory, "src", "query_threads.py"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "OneDrive", "Documents", "New project", "codex-agent-manager", "src", "query_threads.py")
-            };
-            foreach (string candidate in candidates)
-            {
-                try
-                {
-                    if (File.Exists(candidate)) return candidate;
-                }
-                catch {}
-            }
-            return null;
-        }
-
-        private HashSet<string> LoadActiveThreadIdsFromSqlite()
-        {
-            HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string db = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "state_5.sqlite");
-            if (!File.Exists(db)) return ids;
-
-            try
-            {
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "python";
-                psi.Arguments = "-c \"import sqlite3,sys; db=sys.argv[1]; con=sqlite3.connect(db); [print(r[0]) for r in con.execute('select id from threads where archived=0')]\" \"" + db.Replace("\"", "\\\"") + "\"";
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.RedirectStandardOutput = true;
-                psi.RedirectStandardError = true;
-                using (Process process = Process.Start(psi))
-                {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    process.WaitForExit(5000);
-                    if (process.ExitCode != 0)
-                    {
-                        log("active-sqlite-error " + error.Trim());
-                        return ids;
-                    }
-                    foreach (string line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        ids.Add(line.Trim());
-                    }
-                }
-                log("active-sqlite-loaded count=" + ids.Count);
-            }
-            catch (Exception ex)
-            {
-                log("active-sqlite-exception " + ex.Message);
+                log("active-classifier-error source=daemon-registry " + ex.Message);
             }
             return ids;
         }
@@ -1060,7 +956,7 @@ namespace QexowCamGui
 
         public static string Version
         {
-            get { return "2.1.30"; }
+            get { return "2.1.31"; }
         }
     }
 }

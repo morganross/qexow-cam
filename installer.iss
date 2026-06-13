@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.30
+AppVersion=2.1.31
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -27,7 +27,6 @@ Name: "tray"; Description: "System Tray GUI & Shortcuts"; Types: full custom
 ; The ONE executable — cam.exe is a Node.js SEA containing all logic
 Source: "dist\cam.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: daemon
 Source: "dist\qexow-cam-gui.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: tray
-Source: "src\query_threads.py"; DestDir: "{app}"; Flags: ignoreversion; Components: tray
 
 [Icons]
 ; Start Menu: opens the single user-facing Windows GUI.
@@ -123,49 +122,6 @@ begin
   Exec('schtasks.exe', '/Delete /TN "' + TaskName + '" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-procedure KillLegacyNodeDaemon();
-var
-  ResultCode: Integer;
-begin
-  Exec('powershell.exe',
-    '-NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq ''node.exe'' -and $_.CommandLine -like ''*Qexow CAM*daemon-entry.js*'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure KillCamProcessesByInstallPath();
-var
-  ResultCode: Integer;
-begin
-  Exec('powershell.exe',
-    '-NoProfile -ExecutionPolicy Bypass -Command "$targets = @(''cam.exe'',''qexow-cam-gui.exe'',''cam-tray.exe'',''qexow-tray-proof.exe'',''tray_windows_release.exe'',''cam-core.exe''); Get-CimInstance Win32_Process | Where-Object { $targets -contains $_.Name -and ($_.ExecutablePath -like ''*\\Qexow CAM\\*'' -or $_.ExecutablePath -like ''*\\Codex Agent Manager\\*'' -or $_.CommandLine -like ''*\\Qexow CAM\\*'' -or $_.CommandLine -like ''*\\Codex Agent Manager\\*'') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure RunPreinstallCleanupPowerShell();
-var
-  ResultCode: Integer;
-begin
-  Exec('powershell.exe',
-    '-NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = ''SilentlyContinue''; ' +
-    '$log = Join-Path $env:TEMP ''qexow-cam-preinstall-cleanup.log''; ' +
-    'function L($m) { Add-Content -Path $log -Value ((Get-Date).ToString(''s'') + '' '' + $m) }; ' +
-    'L ''preinstall cleanup started''; ' +
-    '$names = @(''cam.exe'',''qexow-cam-gui.exe'',''cam-tray.exe'',''qexow-tray-proof.exe'',''tray_windows_release.exe'',''cam-core.exe'',''node.exe''); ' +
-    '$roots = @((Join-Path $env:LOCALAPPDATA ''Programs\Qexow CAM''),(Join-Path $env:LOCALAPPDATA ''Programs\Codex Agent Manager''),(Join-Path $env:LOCALAPPDATA ''Qexow CAM''),''C:\Program Files\Qexow CAM'',''C:\Program Files (x86)\Qexow CAM''); ' +
-    'for ($i = 0; $i -lt 6; $i++) { ' +
-    '  $procs = @(Get-CimInstance Win32_Process | Where-Object { $proc = $_; $owned = $false; foreach ($root in $roots) { if ($root -and $proc.ExecutablePath -and $proc.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $owned = $true } }; $names -contains $proc.Name -and ($owned -or ($proc.CommandLine -and ($proc.CommandLine -like ''*Qexow CAM*'' -or $proc.CommandLine -like ''*Codex Agent Manager*'' -or $proc.CommandLine -like ''*daemon-entry.js*''))) }); ' +
-    '  foreach ($p in $procs) { L (''stopping pid='' + $p.ProcessId + '' name='' + $p.Name + '' path='' + $p.ExecutablePath); Stop-Process -Id $p.ProcessId -Force }; ' +
-    '  if ($procs.Count -eq 0) { break }; Start-Sleep -Milliseconds 500 ' +
-    '}; ' +
-    '$startup = [Environment]::GetFolderPath(''Startup''); foreach ($f in @(''CodexAgentManager.cmd'',''QexowCam.cmd'',''Codex Agent Manager.cmd'')) { $p = Join-Path $startup $f; if (Test-Path $p) { L (''remove startup '' + $p); Remove-Item -Force $p } }; ' +
-    'foreach ($rk in @(''HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'',''HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'')) { foreach ($rn in @(''Qexow CAM GUI'',''Qexow CAM Tray Proof'',''Codex Agent Manager'',''Codex Agent Manager Tray'')) { Remove-ItemProperty -Path $rk -Name $rn -Force }; }; ' +
-    'foreach ($tn in @(''CodexAgentManager'',''Codex Agent Manager'',''QexowCam'')) { schtasks.exe /Delete /TN $tn /F | Out-Null }; ' +
-    'foreach ($root in $roots) { if ($root -and (Test-Path $root) -and ($root -notlike ''C:\Program Files\Qexow CAM'')) { L (''remove stale dir '' + $root); Remove-Item -LiteralPath $root -Recurse -Force } }; ' +
-    '$hkcuEnv = ''HKCU:\Environment''; $pathVal = (Get-ItemProperty -Path $hkcuEnv -Name Path).Path; if ($pathVal) { $clean = (($pathVal -split '';'' | Where-Object { $_ -and $_ -notmatch ''\\(Qexow CAM|Codex Agent Manager)$'' }) -join '';''); Set-ItemProperty -Path $hkcuEnv -Name Path -Value $clean }; ' +
-    'L ''preinstall cleanup finished''"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
 procedure DeleteIfExists(PathName: string);
 begin
   if FileExists(PathName) then begin
@@ -220,9 +176,6 @@ begin
   KillProcess('cam-core.exe');
   KillProcess('cam-tray.exe');
   KillProcess('tray_windows_release.exe');
-  KillCamProcessesByInstallPath();
-  KillLegacyNodeDaemon();
-  RunPreinstallCleanupPowerShell();
 
   // Remove old task/startup launch points so only the current tray command starts.
   DeleteScheduledTask('CodexAgentManager');
