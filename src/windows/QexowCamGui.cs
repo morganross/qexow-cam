@@ -126,7 +126,9 @@ namespace QexowCamGui
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private const string CamTestMailboxAgent = "CAM test, Kexau CAM test suite mailbox";
         private Dictionary<string, Dictionary<string, object>> activeThreadMetadata = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+        private readonly object daemonStartLock = new object();
         private bool daemonStartAttempted = false;
+        private bool daemonStartInProgress = false;
 
         public MainForm(Action<string> logger)
         {
@@ -240,7 +242,7 @@ namespace QexowCamGui
                 }
                 catch (Exception ex)
                 {
-                    if (!daemonStartAttempted && TryStartDaemon())
+                    if (TryStartDaemon())
                     {
                         Thread.Sleep(2000);
                         try
@@ -770,7 +772,16 @@ namespace QexowCamGui
 
         private bool TryStartDaemon()
         {
-            daemonStartAttempted = true;
+            lock (daemonStartLock)
+            {
+                if (daemonStartAttempted || daemonStartInProgress)
+                {
+                    log("daemon-start-skipped reason=already-attempted-or-in-progress");
+                    return false;
+                }
+                daemonStartAttempted = true;
+                daemonStartInProgress = true;
+            }
             try
             {
                 string exeDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -801,6 +812,13 @@ namespace QexowCamGui
             {
                 log("daemon-start-error " + ex.Message);
                 return false;
+            }
+            finally
+            {
+                lock (daemonStartLock)
+                {
+                    daemonStartInProgress = false;
+                }
             }
         }
 
