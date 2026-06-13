@@ -13,10 +13,11 @@ const installer = read("installer.iss");
 const workflow = read(".github/workflows/release.yml");
 const queryThreads = read("src/query_threads.py");
 const registry = read("src/registry.js");
+const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
 
 const checks = [
-  ["package version is 2.1.27", pkg.version === "2.1.27"],
-  ["daemon exposes CAM_VERSION 2.1.27", daemon.includes('const CAM_VERSION = "2.1.27";')],
+  ["package version is 2.1.28", pkg.version === "2.1.28"],
+  ["daemon exposes CAM_VERSION 2.1.28", daemon.includes('const CAM_VERSION = "2.1.28";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],
@@ -42,10 +43,13 @@ const checks = [
   ["installer rotates volatile CAM state", installer.includes("ResetVolatileCamState") && installer.includes("install-backups")],
   ["installer uses valid USERPROFILE env constant", installer.includes("ExpandConstant('{%USERPROFILE}\\.qexow-cam')") && !installer.includes("{userprofile}")],
   ["installer preserves durable state comment", installer.includes("Preserve durable config/secrets/boss notes")],
-  ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("KillCamProcessesByInstallPath")],
+  ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RunPreinstallCleanupPowerShell") && installer.includes("RemoveDirIfExists")],
+  ["installer cleans stale startup and path state", installer.includes("Remove-ItemProperty") && installer.includes("schtasks.exe") && installer.includes("HKCU:\\Environment")],
+  ["postinstall stale install auditor exists", staleInstallAudit.includes("stale CAM executable remains") && staleInstallAudit.includes("stale process")],
   ["installer app version matches package", installer.includes(`AppVersion=${pkg.version}`)],
   ["GUI version matches package", gui.includes(`get { return "${pkg.version}"; }`)],
   ["release workflow smoke tests installer", workflow.includes("Smoke test installer") && workflow.includes("Installation process succeeded")],
+  ["release workflow tests stale per-user cleanup", workflow.includes("Programs\\Qexow CAM") && workflow.includes("assert-no-stale-installed-cam.ps1")],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

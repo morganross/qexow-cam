@@ -65,6 +65,12 @@ jobs:
       run: |
         $installer = "dist\QexowCamSetup.exe"
         $log = Join-Path $env:TEMP "qexow-cam-installer-smoke.log"
+        $staleQexow = Join-Path $env:LOCALAPPDATA "Programs\Qexow CAM"
+        $staleCodex = Join-Path $env:LOCALAPPDATA "Programs\Codex Agent Manager"
+        New-Item -ItemType Directory -Force -Path $staleQexow,$staleCodex | Out-Null
+        Set-Content -Path (Join-Path $staleQexow "cam.exe") -Value "stale fake cam"
+        Set-Content -Path (Join-Path $staleQexow "tray_windows_release.exe") -Value "stale fake tray"
+        Set-Content -Path (Join-Path $staleCodex "cam.exe") -Value "stale fake codex cam"
         if (Test-Path $log) { Remove-Item $log -Force }
         $p = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log" -PassThru -Wait
         if ($p.ExitCode -ne 0) {
@@ -78,6 +84,7 @@ jobs:
         }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\cam.exe")) { throw "Installed cam.exe missing" }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\qexow-cam-gui.exe")) { throw "Installed GUI missing" }
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\assert-no-stale-installed-cam.ps1
 
     - name: Delete standalone executable payloads
       run: npm run purge-standalone-exes
