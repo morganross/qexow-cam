@@ -6,6 +6,8 @@ import re
 import time
 import urllib.parse
 
+SESSION_ID_RE = re.compile(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.IGNORECASE)
+
 def normalize_path(p):
     if not p:
         return ""
@@ -37,9 +39,201 @@ def load_codex_global_state(codex_dir):
     except Exception:
         return {}
 
+def state_value(state, key, default=None):
+    if key in state:
+        return state.get(key, default)
+    persisted = state.get('electron-persisted-atom-state')
+    if isinstance(persisted, dict) and key in persisted:
+        return persisted.get(key, default)
+    return default
+
+def load_session_index(session_index_path):
+    names = {}
+    updated = {}
+    if not os.path.exists(session_index_path):
+        return names, updated
+    try:
+        with open(session_index_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    tid = data.get('id')
+                    tname = data.get('thread_name')
+                    updated_at = data.get('updated_at')
+                    if not tid:
+                        continue
+                    if tname:
+                        names[tid] = tname
+                    if updated_at:
+                        updated[tid] = updated_at
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return names, updated
+
+def collect_ids_from_obj(obj, out):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and SESSION_ID_RE.fullmatch(key):
+                out.add(key)
+            collect_ids_from_obj(value, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, str) and SESSION_ID_RE.fullmatch(item):
+                out.add(item)
+            else:
+                collect_ids_from_obj(item, out)
+
+def collect_codex_state_thread_ids(state):
+    ids = set()
+    for key in [
+        'unread-thread-ids-by-host-v1',
+        'pinned-thread-ids',
+        'thread-workspace-root-hints',
+    ]:
+        collect_ids_from_obj(state_value(state, key, {}), ids)
+    return ids
+
+def first_text_from_content(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get('text') or item.get('input_text') or item.get('output_text')
+            if text:
+                parts.append(str(text))
+        return ' '.join(parts).strip()
+    return ''
+
+def title_from_rollout_messages(path):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            for _ in range(80):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    obj = json.loads(line)
+                    payload = obj.get('payload', {})
+                    if obj.get('type') == 'event_msg' and payload.get('type') == 'user_message':
+                        message = str(payload.get('message') or '').strip()
+                        if message and not message.startswith('# AGENTS.md instructions'):
+                            return message[:80] + ('...' if len(message) > 80 else '')
+                    if obj.get('type') == 'response_item' and payload.get('type') == 'message' and payload.get('role') == 'user':
+                        text = first_text_from_content(payload.get('content'))
+                        if text and not text.startswith('# AGENTS.md instructions') and not text.startswith('<environment_context>'):
+                            return text[:80] + ('...' if len(text) > 80 else '')
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return 'Codex Chat'
+
+def read_rollout_meta(path):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            first = f.readline()
+        data = json.loads(first)
+        if data.get('type') != 'session_meta':
+            return None
+        return data.get('payload', {})
+    except Exception:
+        return None
+
+def index_rollout_paths(codex_dir):
+    by_id = {}
+    for subdir, rank in [('sessions', 2), ('archived_sessions', 1)]:
+        root_dir = os.path.join(codex_dir, subdir)
+        if not os.path.exists(root_dir):
+            continue
+        for root, _dirs, files in os.walk(root_dir):
+            for name in files:
+                if not name.startswith('rollout-') or not name.endswith('.jsonl'):
+                    continue
+                path = os.path.join(root, name)
+                match = SESSION_ID_RE.search(name)
+                tid = match.group(1) if match else None
+                meta = read_rollout_meta(path)
+                if meta and meta.get('id'):
+                    tid = meta.get('id')
+                if not tid:
+                    continue
+                previous = by_id.get(tid)
+                current = {
+                    "path": path,
+                    "rank": rank,
+                    "mtime": os.path.getmtime(path),
+                    "meta": meta or {},
+                }
+                if not previous or (rank, current["mtime"]) >= (previous["rank"], previous["mtime"]):
+                    by_id[tid] = current
+    return by_id
+
+def codex_row_from_rollout(tid, rollout_info, name_map, updated_map, source_label):
+    path = rollout_info.get("path")
+    meta = rollout_info.get("meta") or {}
+    if meta.get('thread_source') and meta.get('thread_source') != 'user':
+        return None
+    cwd = meta.get('cwd') or 'outside-of-project'
+    return {
+        "id": tid,
+        "title": name_map.get(tid) or title_from_rollout_messages(path),
+        "agent_nickname": "",
+        "agent_role": "",
+        "cwd": cwd,
+        "source": meta.get('source') or source_label,
+        "codex_thread_source": meta.get('thread_source') or "user",
+        "rollout_path": path,
+        "created_at": meta.get('timestamp'),
+        "updated_at": updated_map.get(tid),
+        "discovery_source": source_label,
+    }
+
+def discover_codex_rollout_threads(codex_dir, name_map, updated_map, rollout_index=None):
+    rollout_index = rollout_index or index_rollout_paths(codex_dir)
+    rows_by_id = {}
+    for tid, info in rollout_index.items():
+        if info.get("rank") != 2:
+            continue
+        row = codex_row_from_rollout(tid, info, name_map, updated_map, "rollout")
+        if row:
+            rows_by_id[tid] = row
+    return list(rows_by_id.values())
+
+def discover_codex_state_threads(state, name_map, updated_map, rollout_index):
+    rows = []
+    workspace_hints = state_value(state, 'thread-workspace-root-hints', {}) or {}
+    for tid in collect_codex_state_thread_ids(state):
+        info = rollout_index.get(tid)
+        if info:
+            if info.get("rank") != 2:
+                continue
+            row = codex_row_from_rollout(tid, info, name_map, updated_map, "codex-state")
+        else:
+            cwd = workspace_hints.get(tid) or 'outside-of-project'
+            row = {
+                "id": tid,
+                "title": name_map.get(tid) or "Codex Chat",
+                "agent_nickname": "",
+                "agent_role": "",
+                "cwd": cwd,
+                "source": "codex-state",
+                "codex_thread_source": "user",
+                "created_at": None,
+                "updated_at": updated_map.get(tid),
+                "discovery_source": "codex-state",
+            }
+        if row:
+            rows.append(row)
+    return rows
+
 def remote_connection_aliases(state):
     aliases = {}
-    for conn in state.get('codex-managed-remote-connections', []) or []:
+    for conn in state_value(state, 'codex-managed-remote-connections', []) or []:
         host_id = conn.get('hostId') or ''
         alias = conn.get('alias') or conn.get('displayName') or host_id.replace('remote-ssh-discovered:', '')
         if host_id and alias:
@@ -61,7 +255,7 @@ def infer_route_metadata(cwd, thread_source, state):
         return metadata
 
     normalized = (cwd or "").replace('\\\\?\\', '').replace('\\', '/')
-    for project in state.get('remote-projects', []) or []:
+    for project in state_value(state, 'remote-projects', []) or []:
         remote_path = (project.get('remotePath') or '').rstrip('/')
         host_id = project.get('hostId') or ''
         alias = aliases.get(host_id) or host_id.replace('remote-ssh-discovered:', '')
@@ -73,7 +267,7 @@ def infer_route_metadata(cwd, thread_source, state):
             metadata["route"] = f"codex-managed:{alias}"
             return metadata
     if normalized.startswith('/home/') or normalized.startswith('/root/') or normalized.startswith('/opt/'):
-        selected = state.get('selected-remote-host-id') or ''
+        selected = state_value(state, 'selected-remote-host-id', '') or ''
         alias = aliases.get(selected) or selected.replace('remote-ssh-discovered:', '') or "remote"
         metadata["nodeName"] = alias
         metadata["sourceHost"] = alias
@@ -166,7 +360,7 @@ def discover_antigravity(workspace_roots, state):
         # Resolve Title
         title = titles.get(d)
         if not title:
-            # Fallback 1: Read CONVERSATION_HISTORY from transcript.jsonl
+            # Title source 2: Read CONVERSATION_HISTORY from transcript.jsonl
             try:
                 with open(tpath, 'r', encoding='utf-8') as f:
                     for _ in range(15):
@@ -183,7 +377,7 @@ def discover_antigravity(workspace_roots, state):
                 pass
                 
         if not title:
-            # Fallback 2: Read first USER_INPUT
+            # Title source 3: Read first USER_INPUT
             try:
                 with open(tpath, 'r', encoding='utf-8') as f:
                     line = f.readline()
@@ -231,28 +425,14 @@ def main():
         workspace_roots = []
         if state:
             try:
-                active = state.get('active-workspace-roots', [])
-                saved = state.get('electron-saved-workspace-roots', [])
+                active = state_value(state, 'active-workspace-roots', [])
+                saved = state_value(state, 'electron-saved-workspace-roots', [])
                 workspace_roots = list(set(active + saved))
             except Exception:
                 pass
 
-        # 2. Build thread_name map from session_index.jsonl (keeping the latest name)
-        name_map = {}
-        if os.path.exists(session_index_path):
-            try:
-                with open(session_index_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            data = json.loads(line)
-                            tid = data.get('id')
-                            tname = data.get('thread_name')
-                            if tid and tname:
-                                name_map[tid] = tname
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+        # 2. Build thread metadata from session_index.jsonl, keeping the latest seen name.
+        name_map, updated_map = load_session_index(session_index_path)
 
         rows = []
         if os.path.exists(db_path):
@@ -271,6 +451,19 @@ def main():
                 conn.close()
             except Exception:
                 pass
+
+        # SQLite is not always updated at the same time as the rollout/session index files.
+        # Merge rollout-discovered Codex sessions so a real active transcript is not invisible to CAM.
+        seen_codex_ids = set(str(r.get('id')).lower() for r in rows if r.get('id'))
+        rollout_index = index_rollout_paths(codex_dir)
+        for rollout_row in discover_codex_rollout_threads(codex_dir, name_map, updated_map, rollout_index):
+            if str(rollout_row.get('id')).lower() not in seen_codex_ids:
+                rows.append(rollout_row)
+                seen_codex_ids.add(str(rollout_row.get('id')).lower())
+        for state_row in discover_codex_state_threads(state, name_map, updated_map, rollout_index):
+            if str(state_row.get('id')).lower() not in seen_codex_ids:
+                rows.append(state_row)
+                seen_codex_ids.add(str(state_row.get('id')).lower())
         
         # Map custom chat names to titles for Codex threads
         for r in rows:

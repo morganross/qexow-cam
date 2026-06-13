@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
 
-[assembly: AssemblyVersion("2.1.29.0")]
-[assembly: AssemblyFileVersion("2.1.29.0")]
-[assembly: AssemblyInformationalVersion("2.1.29")]
+[assembly: AssemblyVersion("2.1.30.0")]
+[assembly: AssemblyFileVersion("2.1.30.0")]
+[assembly: AssemblyInformationalVersion("2.1.30")]
 
 namespace QexowCamGui
 {
@@ -1060,7 +1060,7 @@ namespace QexowCamGui
 
         public static string Version
         {
-            get { return "2.1.29"; }
+            get { return "2.1.30"; }
         }
     }
 }

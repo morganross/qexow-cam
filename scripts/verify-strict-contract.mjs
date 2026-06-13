@@ -16,8 +16,8 @@ const registry = read("src/registry.js");
 const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
 
 const checks = [
-  ["package version is 2.1.29", pkg.version === "2.1.29"],
-  ["daemon exposes CAM_VERSION 2.1.29", daemon.includes('const CAM_VERSION = "2.1.29";')],
+  ["package version is 2.1.30", pkg.version === "2.1.30"],
+  ["daemon exposes CAM_VERSION 2.1.30", daemon.includes('const CAM_VERSION = "2.1.30";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],
@@ -28,6 +28,8 @@ const checks = [
   ["daemon marks thread send delivered after turn id", daemon.includes('message.delivery = "delivered"') && daemon.includes('appendEvent("message.delivered", message)')],
   ["registry persists route metadata", registry.includes("sourceHost") && registry.includes("hostKind") && registry.includes("transport") && registry.includes("route")],
   ["query discovery emits route metadata", queryThreads.includes("infer_route_metadata") && queryThreads.includes("remote-projects")],
+  ["query discovery merges SQLite, session index, state, and rollout sources", queryThreads.includes("load_session_index") && queryThreads.includes("index_rollout_paths") && queryThreads.includes("discover_codex_rollout_threads") && queryThreads.includes("discover_codex_state_threads")],
+  ["query discovery treats active sessions ahead of archived copies", queryThreads.includes("('sessions', 2)") && queryThreads.includes("('archived_sessions', 1)") && queryThreads.includes('info.get("rank") != 2')],
   ["CLI can send correlation id", cli.includes("opts.correlationId") && cli.includes("payload.correlationId")],
   ["CLI can send message type", cli.includes("opts.messageType") && cli.includes("payload.messageType")],
   ["generated skill documents diagnostic reply pattern", antigravity.includes("cam-gui-test-reply") && antigravity.includes("-CorrelationId")],
