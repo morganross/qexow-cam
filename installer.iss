@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.28
+AppVersion=2.1.29
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -97,6 +97,10 @@ Filename: "{app}\cam.exe"; Parameters: "uninstall-service"; Flags: runhidden; Ru
 Type: files; Name: "{userstartup}\CodexAgentManager.cmd"
 Type: files; Name: "{userstartup}\QexowCam.cmd"
 Type: files; Name: "{userstartup}\Codex Agent Manager.cmd"
+Type: filesandordirs; Name: "{%USERPROFILE}\.qexow-cam"
+Type: filesandordirs; Name: "{localappdata}\Programs\Qexow CAM"
+Type: filesandordirs; Name: "{localappdata}\Programs\Codex Agent Manager"
+Type: filesandordirs; Name: "{localappdata}\Qexow CAM"
 
 [Run]
 ; Record local startup metadata. This does not create scheduled tasks or shell scripts.
@@ -169,32 +173,6 @@ begin
   end;
 end;
 
-procedure RotateIfExists(PathName: string; BackupDir: string; Stamp: string);
-var
-  Dest: string;
-begin
-  if FileExists(PathName) then begin
-    if not DirExists(BackupDir) then begin
-      ForceDirectories(BackupDir);
-    end;
-    Dest := BackupDir + '\' + ExtractFileName(PathName) + '.bak-' + Stamp;
-    RenameFile(PathName, Dest);
-  end;
-end;
-
-procedure RotateDirIfExists(PathName: string; BackupDir: string; Stamp: string);
-var
-  Dest: string;
-begin
-  if DirExists(PathName) then begin
-    if not DirExists(BackupDir) then begin
-      ForceDirectories(BackupDir);
-    end;
-    Dest := BackupDir + '\' + ExtractFileName(PathName) + '.bak-' + Stamp;
-    RenameFile(PathName, Dest);
-  end;
-end;
-
 procedure RemoveDirIfExists(PathName: string);
 begin
   if DirExists(PathName) then begin
@@ -202,26 +180,22 @@ begin
   end;
 end;
 
-procedure ResetVolatileCamState();
+procedure ResetCamRuntimeStateForInstall();
 var
   CamHome: string;
-  BackupDir: string;
-  Stamp: string;
 begin
   CamHome := ExpandConstant('{%USERPROFILE}\.qexow-cam');
-  Stamp := GetDateTimeString('yyyy-mm-dd-hh-nn-ss', '-', '-');
-  BackupDir := CamHome + '\install-backups\' + Stamp;
 
-  // Preserve durable config/secrets/boss notes. Rotate volatile runtime state.
-  RotateIfExists(CamHome + '\agents.json', BackupDir, Stamp);
-  RotateIfExists(CamHome + '\mailbox.jsonl', BackupDir, Stamp);
-  RotateIfExists(CamHome + '\events.jsonl', BackupDir, Stamp);
-  RotateDirIfExists(CamHome + '\logs', BackupDir, Stamp);
-
+  // Reinstall starts with a clean runtime map and message/test history.
+  DeleteIfExists(CamHome + '\agents.json');
+  DeleteIfExists(CamHome + '\mailbox.jsonl');
+  DeleteIfExists(CamHome + '\events.jsonl');
+  DeleteIfExists(CamHome + '\tests.jsonl');
   DeleteIfExists(CamHome + '\daemon.pid');
   DeleteIfExists(CamHome + '\daemon.json');
   DeleteIfExists(CamHome + '\tray.lock');
   DeleteIfExists(CamHome + '\service.json');
+  RemoveDirIfExists(CamHome + '\logs');
 end;
 
 function IsHeadlessInstall(): Boolean;
@@ -260,7 +234,7 @@ begin
   RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Qexow CAM'));
   RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Codex Agent Manager'));
   RemoveDirIfExists(ExpandConstant('{localappdata}\Qexow CAM'));
-  ResetVolatileCamState();
+  ResetCamRuntimeStateForInstall();
 
   Result := True;
 end;

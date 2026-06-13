@@ -16,8 +16,8 @@ const registry = read("src/registry.js");
 const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
 
 const checks = [
-  ["package version is 2.1.28", pkg.version === "2.1.28"],
-  ["daemon exposes CAM_VERSION 2.1.28", daemon.includes('const CAM_VERSION = "2.1.28";')],
+  ["package version is 2.1.29", pkg.version === "2.1.29"],
+  ["daemon exposes CAM_VERSION 2.1.29", daemon.includes('const CAM_VERSION = "2.1.29";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],
@@ -40,9 +40,9 @@ const checks = [
   ["GUI exact selected-agent source match remains enforced", gui.includes("!String.Equals(sourceAgent, expectedAgentName, StringComparison.OrdinalIgnoreCase)")],
   ["GUI exact mailbox target match remains enforced", gui.includes("String.Equals(targetAgent, CamTestMailboxAgent, StringComparison.Ordinal)")],
   ["GUI blocks stale/unbound preflight", gui.includes('String.Equals(status, "stale"') && gui.includes('String.Equals(status, "unbound"')],
-  ["installer rotates volatile CAM state", installer.includes("ResetVolatileCamState") && installer.includes("install-backups")],
+  ["installer deletes runtime map on reinstall", installer.includes("ResetCamRuntimeStateForInstall") && installer.includes("DeleteIfExists(CamHome + '\\agents.json')")],
   ["installer uses valid USERPROFILE env constant", installer.includes("ExpandConstant('{%USERPROFILE}\\.qexow-cam')") && !installer.includes("{userprofile}")],
-  ["installer preserves durable state comment", installer.includes("Preserve durable config/secrets/boss notes")],
+  ["uninstaller removes all CAM local state", installer.includes('Type: filesandordirs; Name: "{%USERPROFILE}\\.qexow-cam"')],
   ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RunPreinstallCleanupPowerShell") && installer.includes("RemoveDirIfExists")],
   ["installer cleans stale startup and path state", installer.includes("Remove-ItemProperty") && installer.includes("schtasks.exe") && installer.includes("HKCU:\\Environment")],
   ["postinstall stale install auditor exists", staleInstallAudit.includes("stale CAM executable remains") && staleInstallAudit.includes("stale process")],
@@ -50,6 +50,8 @@ const checks = [
   ["GUI version matches package", gui.includes(`get { return "${pkg.version}"; }`)],
   ["release workflow smoke tests installer", workflow.includes("Smoke test installer") && workflow.includes("Installation process succeeded")],
   ["release workflow tests stale per-user cleanup", workflow.includes("Programs\\Qexow CAM") && workflow.includes("assert-no-stale-installed-cam.ps1")],
+  ["release workflow tests reinstall map deletion", workflow.includes("Reinstall did not remove stale agents.json map") && workflow.includes("tests.jsonl")],
+  ["release workflow tests uninstall full CAM home deletion", workflow.includes("Uninstall did not remove CAM home") && workflow.includes("unins000.exe")],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

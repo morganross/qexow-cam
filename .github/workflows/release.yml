@@ -67,10 +67,15 @@ jobs:
         $log = Join-Path $env:TEMP "qexow-cam-installer-smoke.log"
         $staleQexow = Join-Path $env:LOCALAPPDATA "Programs\Qexow CAM"
         $staleCodex = Join-Path $env:LOCALAPPDATA "Programs\Codex Agent Manager"
+        $camHome = Join-Path $env:USERPROFILE ".qexow-cam"
         New-Item -ItemType Directory -Force -Path $staleQexow,$staleCodex | Out-Null
         Set-Content -Path (Join-Path $staleQexow "cam.exe") -Value "stale fake cam"
         Set-Content -Path (Join-Path $staleQexow "tray_windows_release.exe") -Value "stale fake tray"
         Set-Content -Path (Join-Path $staleCodex "cam.exe") -Value "stale fake codex cam"
+        New-Item -ItemType Directory -Force -Path $camHome | Out-Null
+        Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"stale":true}'
+        Set-Content -Path (Join-Path $camHome "mailbox.jsonl") -Value '{"stale":true}'
+        Set-Content -Path (Join-Path $camHome "tests.jsonl") -Value '{"stale":true}'
         if (Test-Path $log) { Remove-Item $log -Force }
         $p = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log" -PassThru -Wait
         if ($p.ExitCode -ne 0) {
@@ -84,7 +89,17 @@ jobs:
         }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\cam.exe")) { throw "Installed cam.exe missing" }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\qexow-cam-gui.exe")) { throw "Installed GUI missing" }
+        if (Test-Path (Join-Path $camHome "agents.json")) { throw "Reinstall did not remove stale agents.json map" }
+        if (Test-Path (Join-Path $camHome "mailbox.jsonl")) { throw "Reinstall did not remove stale mailbox.jsonl" }
+        if (Test-Path (Join-Path $camHome "tests.jsonl")) { throw "Reinstall did not remove stale tests.jsonl" }
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\assert-no-stale-installed-cam.ps1
+        $uninstaller = "C:\Program Files\Qexow CAM\unins000.exe"
+        if (-not (Test-Path $uninstaller)) { throw "Uninstaller missing" }
+        New-Item -ItemType Directory -Force -Path $camHome | Out-Null
+        Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"uninstall_should_delete":true}'
+        $u = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -PassThru -Wait
+        if ($u.ExitCode -ne 0) { throw "Uninstaller smoke failed with exit code $($u.ExitCode)" }
+        if (Test-Path $camHome) { throw "Uninstall did not remove CAM home $camHome" }
 
     - name: Delete standalone executable payloads
       run: npm run purge-standalone-exes
