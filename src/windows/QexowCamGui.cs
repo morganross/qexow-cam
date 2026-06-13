@@ -333,8 +333,8 @@ namespace QexowCamGui
 
             testButton.Enabled = false;
             testButton.Text = "Testing...";
-            outputBox.Text = AppendLine(outputBox.Text, "TEST START  target=" + agentName);
-            outputBox.Text = AppendLine(outputBox.Text, "STATE send  sending test message...");
+            AppendOutput("TEST START  target=" + agentName);
+            AppendOutput("STATE send  sending test message...");
             log("test-start agent=" + agentName);
 
             ThreadPool.QueueUserWorkItem(delegate
@@ -353,17 +353,17 @@ namespace QexowCamGui
                     string turnId = NestedValue(sendResult, "message", "turnId");
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE sent  delivery accepted");
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE wait  turnId=" + turnId + " testId=" + correlationId);
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE wait  waiting for CAM inbox reply to windows-gui, not reading session logs");
+                        AppendOutput("STATE sent  delivery accepted");
+                        AppendOutput("STATE wait  turnId=" + turnId + " testId=" + correlationId);
+                        AppendOutput("STATE wait  waiting for CAM inbox reply to windows-gui, not reading session logs");
                     });
 
                     string response = WaitForMailboxResponse(agentName, correlationId, 90000);
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE done  CAM inbox reply received from " + agentName);
-                        outputBox.Text = AppendLine(outputBox.Text, response);
-                        outputBox.Text = AppendLine(outputBox.Text, "TEST PASS");
+                        AppendOutput("STATE done  CAM inbox reply received from " + agentName);
+                        AppendOutput(response);
+                        AppendOutput("TEST PASS");
                         testButton.Enabled = true;
                         testButton.Text = "Test Selected Agent";
                     });
@@ -373,8 +373,8 @@ namespace QexowCamGui
                 {
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE fail  " + ex.Message);
-                        outputBox.Text = AppendLine(outputBox.Text, "TEST FAIL");
+                        AppendOutput("STATE fail  " + ex.Message);
+                        AppendOutput("TEST FAIL");
                         testButton.Enabled = true;
                         testButton.Text = "Test Selected Agent";
                     });
@@ -398,7 +398,7 @@ namespace QexowCamGui
                     string mark = spinner[pollCount % spinner.Length];
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading windows-gui CAM inbox...");
+                        AppendOutput("STATE poll " + mark + " elapsed=" + elapsedSeconds + "s reading windows-gui CAM inbox...");
                     });
 
                     Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=windows-gui&wait=5");
@@ -407,7 +407,7 @@ namespace QexowCamGui
                     lastSummary = SummarizeInbox(inboxResult);
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE seen  no matching reply yet; " + lastSummary);
+                        AppendOutput("STATE seen  no matching reply yet; " + lastSummary);
                     });
                 }
                 catch (Exception ex)
@@ -415,7 +415,7 @@ namespace QexowCamGui
                     lastSummary = "read error: " + ex.Message;
                     InvokeUi(delegate
                     {
-                        outputBox.Text = AppendLine(outputBox.Text, "STATE read-error  " + ex.Message);
+                        AppendOutput("STATE read-error  " + ex.Message);
                     });
                 }
                 Thread.Sleep(2000);
@@ -438,11 +438,16 @@ namespace QexowCamGui
                 bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
                     body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!idMatches) continue;
-                if (!String.IsNullOrWhiteSpace(sourceAgent) && !String.Equals(sourceAgent, agentName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return "CAM reply matched testId=" + correlationId + " from " + sourceAgent + ":\r\n" + body;
-                }
-                return "CAM reply matched testId=" + correlationId + ":\r\n" + body;
+                if (String.IsNullOrWhiteSpace(body)) body = "(empty body)";
+                string header = "CAM REPLY MATCHED\r\n" +
+                    "testId: " + correlationId + "\r\n" +
+                    "messageId: " + Value(message, "messageId") + "\r\n" +
+                    "sourceAgent: " + sourceAgent + "\r\n" +
+                    "targetAgent: " + Value(message, "targetAgent") + "\r\n" +
+                    "delivery: " + Value(message, "delivery") + "\r\n" +
+                    "error: " + Value(message, "error") + "\r\n" +
+                    "REPLY BODY:\r\n";
+                return header + body;
             }
             return "";
         }
@@ -802,6 +807,14 @@ namespace QexowCamGui
         {
             if (String.IsNullOrEmpty(existing)) return DateTime.Now.ToString("T") + "  " + line;
             return existing + Environment.NewLine + DateTime.Now.ToString("T") + "  " + line;
+        }
+
+        private void AppendOutput(string line)
+        {
+            outputBox.Text = AppendLine(outputBox.Text, line);
+            outputBox.SelectionStart = outputBox.Text.Length;
+            outputBox.SelectionLength = 0;
+            outputBox.ScrollToCaret();
         }
     }
 
