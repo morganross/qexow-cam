@@ -19,9 +19,9 @@ const uninstallBranchIndex = cli.indexOf('if (cmd === "uninstall-service")');
 const serviceLogEventIndex = cli.indexOf('logEvent("cli.service.action"');
 
 const checks = [
-  ["package version is 2.1.32", pkg.version === "2.1.32"],
+  ["package version is 2.1.38", pkg.version === "2.1.38"],
   ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
-  ["daemon exposes CAM_VERSION 2.1.32", daemon.includes('const CAM_VERSION = "2.1.32";')],
+  ["daemon exposes CAM_VERSION 2.1.38", daemon.includes('const CAM_VERSION = "2.1.38";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],
