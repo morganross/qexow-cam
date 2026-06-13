@@ -561,12 +561,8 @@ async function commandNode(args) {
 }
 
 async function commandService(cmd, args) {
-  logEvent("cli.service.action", { command: cmd, args });
-  const opts = parseOptions(args);
-  const name = opts.name || "QexowCam";
-  const headless = !!opts.headless;
-  const serviceFile = path.join(paths().root, "service.json");
   if (cmd === "uninstall-service") {
+    const serviceFile = path.join(paths().root, "service.json");
     try {
       fs.rmSync(serviceFile, { force: true });
     } catch (error) {
@@ -575,6 +571,11 @@ async function commandService(cmd, args) {
     console.log(`removed uninstall-service metadata at ${serviceFile}`);
     return;
   }
+  logEvent("cli.service.action", { command: cmd, args });
+  const opts = parseOptions(args);
+  const name = opts.name || "QexowCam";
+  const headless = !!opts.headless;
+  const serviceFile = path.join(paths().root, "service.json");
   initConfig();
   writeJsonAtomic(serviceFile, {
     name,

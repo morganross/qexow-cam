@@ -15,6 +15,8 @@ const workflow = read(".github/workflows/release.yml");
 const threadDiscovery = read("src/thread-discovery.js");
 const registry = read("src/registry.js");
 const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
+const uninstallBranchIndex = cli.indexOf('if (cmd === "uninstall-service")');
+const serviceLogEventIndex = cli.indexOf('logEvent("cli.service.action"');
 
 const checks = [
   ["package version is 2.1.32", pkg.version === "2.1.32"],
@@ -39,6 +41,7 @@ const checks = [
   ["installer does not ship query_threads.py", !installer.includes("query_threads.py")],
   ["CLI can send correlation id", cli.includes("opts.correlationId") && cli.includes("payload.correlationId")],
   ["CLI can send message type", cli.includes("opts.messageType") && cli.includes("payload.messageType")],
+  ["CLI uninstall-service does not log before returning", uninstallBranchIndex >= 0 && serviceLogEventIndex >= 0 && uninstallBranchIndex < serviceLogEventIndex],
   ["generated skill documents diagnostic reply pattern", antigravity.includes("cam-gui-test-reply") && antigravity.includes("--correlation-id")],
   ["generated skill avoids PowerShell helper instructions", !antigravity.includes("Send-AgentMessage.ps1") && !antigravity.includes("Check-AgentMessages.ps1") && antigravity.includes("cam send")],
   ["daemon prompt does not offer direct CAM HTTP", !daemon.includes("send via CAM HTTP") && daemon.includes("Do not use direct CAM HTTP")],
