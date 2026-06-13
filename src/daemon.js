@@ -1510,32 +1510,25 @@ export class AgentManagerDaemon {
   async #syncSinglePeer(peer) {
     const peerName = peer.name;
     const remoteRoot = await this.resolveRemoteRoot(peerName);
-    const remoteStateRoot = await this.#resolveRemoteStateRoot(peer);
-    if (!remoteStateRoot) {
-      const error = "unable to locate remote CAM state root (.qexow-cam or .codex-agent-manager)";
+    if (!remoteRoot) {
+      const error = "unable to locate remote CAM manager root";
       this.log("peer.sync.failed", { peerName, error });
       return { ok: false, peerName, error };
     }
-    const registryText = await this.#sshReadFile(peer, path.posix.join(remoteStateRoot, "agents.json"));
-    if (!registryText.ok) {
-      this.log("peer.sync.failed", { peerName, error: registryText.error });
-      return { ok: false, peerName, error: registryText.error };
+    const remoteInventoryResult = await this.#fetchRemoteCamInventory(peer, remoteRoot);
+    if (!remoteInventoryResult.ok) {
+      this.log("peer.sync.failed", { peerName, error: remoteInventoryResult.error });
+      return { ok: false, peerName, error: remoteInventoryResult.error };
     }
-    let remoteRegistry;
-    try {
-      remoteRegistry = JSON.parse(registryText.text);
-    } catch (error) {
-      this.log("peer.sync.failed", { peerName, error: `invalid remote registry JSON: ${error.message}` });
-      return { ok: false, peerName, error: `invalid remote registry JSON: ${error.message}` };
-    }
-    const result = this.#ingestRemotePeerRegistry(peer, remoteRegistry, remoteRoot);
+    const remoteInventory = remoteInventoryResult.inventory;
+    const result = this.#ingestRemotePeerRegistry(peer, remoteInventory, remoteRoot);
     upsertPeer(this.config, peerName, {
       ...getPeer(this.config, peerName),
       remoteSync: {
         syncedAt: new Date().toISOString(),
         remoteRoot: remoteRoot || null,
-        remoteStateRoot,
-        remoteNodeName: remoteRegistry?.nodeName || null,
+        remoteInventorySource: remoteInventoryResult.source,
+        remoteNodeName: remoteInventory?.nodeName || null,
         mirroredAgents: result.mirroredAgents,
       },
     });
@@ -1543,20 +1536,20 @@ export class AgentManagerDaemon {
       peerName,
       mirroredAgents: result.mirroredAgents.length,
       remoteRoot: remoteRoot || null,
-      remoteNodeName: remoteRegistry?.nodeName || null,
+      remoteNodeName: remoteInventory?.nodeName || null,
     });
     appendEvent("peer.sync.complete", {
       peerName,
       mirroredAgents: result.mirroredAgents.length,
       remoteRoot: remoteRoot || null,
-      remoteNodeName: remoteRegistry?.nodeName || null,
+      remoteNodeName: remoteInventory?.nodeName || null,
     });
     return {
       ok: true,
       peerName,
       remoteRoot: remoteRoot || null,
-      remoteStateRoot,
-      remoteNodeName: remoteRegistry?.nodeName || null,
+      remoteInventorySource: remoteInventoryResult.source,
+      remoteNodeName: remoteInventory?.nodeName || null,
       mirroredAgents: result.mirroredAgents,
     };
   }
@@ -1606,34 +1599,6 @@ export class AgentManagerDaemon {
     return `${peerName}::${remoteAgentName}`;
   }
 
-  async #sshReadFile(peer, remotePath) {
-    return this.#probeRemoteCommand(peer, `cat ${sq(remotePath)}`, 15000);
-  }
-
-  async #resolveRemoteStateRoot(peer) {
-    const username = this.#sshUsername(peer) || "ubuntu";
-    const homeRoot = username === "root" ? "/root" : `/home/${username}`;
-    const candidates = [
-      path.posix.join(homeRoot, ".qexow-cam"),
-      path.posix.join(homeRoot, ".codex-agent-manager"),
-    ];
-    for (const candidate of candidates) {
-      this.log("peer.remote_state_root.probe", {
-        peerName: peer.name,
-        candidate,
-      });
-      const result = await this.#probeRemoteCommand(peer, `test -f ${sq(path.posix.join(candidate, "agents.json"))}`);
-      if (result.ok) {
-        this.log("peer.remote_state_root.verified", {
-          peerName: peer.name,
-          remoteStateRoot: candidate,
-        });
-        return candidate;
-      }
-    }
-    return null;
-  }
-
   async #sshRunCamSend(peer, remoteRoot, payload) {
     const root = remoteRoot || this.#remoteManagerRoot(peer);
     const command = [
@@ -1657,6 +1622,139 @@ export class AgentManagerDaemon {
       command,
     });
     return this.#probeRemoteCommand(peer, command, 20000);
+  }
+
+  async #sshRunCamInventoryExport(peer, remoteRoot) {
+    const root = remoteRoot || this.#remoteManagerRoot(peer);
+    const command = [
+      `cd ${sq(root)}`,
+      "&&",
+      "node",
+      sq("./bin/cam.js"),
+      "inventory",
+      "export",
+    ].join(" ");
+    this.log("peer.remote_inventory.command", {
+      peerName: peer.name,
+      command,
+    });
+    return this.#probeRemoteCommand(peer, command, 20000);
+  }
+
+  async #fetchRemoteCamInventory(peer, remoteRoot) {
+    const exported = await this.#sshRunCamInventoryExport(peer, remoteRoot);
+    if (exported.ok) {
+      try {
+        return {
+          ok: true,
+          source: "cam inventory export",
+          inventory: JSON.parse(exported.text),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: `invalid remote CAM inventory JSON: ${error.message}`,
+        };
+      }
+    }
+
+    if (!/unknown command:\s*inventory/i.test(exported.error || "")) {
+      return {
+        ok: false,
+        error: exported.error,
+      };
+    }
+
+    this.log("peer.remote_inventory.fallback_legacy", {
+      peerName: peer.name,
+      reason: "remote cam lacks inventory export command",
+    });
+
+    const statusResult = await this.#sshRunCamDaemonStatus(peer, remoteRoot);
+    if (!statusResult.ok) {
+      return { ok: false, error: statusResult.error };
+    }
+    const agentListResult = await this.#sshRunCamAgentList(peer, remoteRoot);
+    if (!agentListResult.ok) {
+      return { ok: false, error: agentListResult.error };
+    }
+
+    let daemonStatus;
+    try {
+      daemonStatus = JSON.parse(statusResult.text);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `invalid remote CAM daemon status JSON: ${error.message}`,
+      };
+    }
+
+    return {
+      ok: true,
+      source: "cam daemon status + cam agent list",
+      inventory: {
+        version: 1,
+        nodeName: daemonStatus.nodeName || peer.name,
+        exportedAt: new Date().toISOString(),
+        agents: this.#parseLegacyAgentList(agentListResult.text),
+        peers: {},
+      },
+    };
+  }
+
+  async #sshRunCamDaemonStatus(peer, remoteRoot) {
+    const root = remoteRoot || this.#remoteManagerRoot(peer);
+    const command = [
+      `cd ${sq(root)}`,
+      "&&",
+      "node",
+      sq("./bin/cam.js"),
+      "daemon",
+      "status",
+    ].join(" ");
+    this.log("peer.remote_status.command", {
+      peerName: peer.name,
+      command,
+    });
+    return this.#probeRemoteCommand(peer, command, 20000);
+  }
+
+  async #sshRunCamAgentList(peer, remoteRoot) {
+    const root = remoteRoot || this.#remoteManagerRoot(peer);
+    const command = [
+      `cd ${sq(root)}`,
+      "&&",
+      "node",
+      sq("./bin/cam.js"),
+      "agent",
+      "list",
+    ].join(" ");
+    this.log("peer.remote_agent_list.command", {
+      peerName: peer.name,
+      command,
+    });
+    return this.#probeRemoteCommand(peer, command, 20000);
+  }
+
+  #parseLegacyAgentList(text) {
+    const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const agents = [];
+    for (const line of lines) {
+      const parts = line.split("\t");
+      if (parts.length < 9) continue;
+      agents.push({
+        name: parts[0] || null,
+        status: parts[1] || null,
+        node: parts[2] || null,
+        threadId: parts[3] && parts[3] !== "-" ? parts[3] : null,
+        model: parts[4] && parts[4] !== "-" ? parts[4] : null,
+        modelProvider: parts[5] && parts[5] !== "-" ? parts[5] : null,
+        effort: parts[6] && parts[6] !== "-" ? parts[6] : null,
+        serviceTier: parts[7] && parts[7] !== "-" && parts[7] !== "standard" ? parts[7] : null,
+        cwd: parts.slice(8).join("\t") || null,
+      });
+    }
+    return agents;
   }
 
   #remoteManagerRoot(peer) {

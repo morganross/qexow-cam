@@ -32,6 +32,7 @@ function usage() {
   cam send <agent-name> <message> [--from <agent-name>] [--correlation-id <id>] [--message-type <type>] [--strict]
   cam inbox [agent-name]
   cam logs
+  cam inventory export
   cam install-service
   cam uninstall-service`;
 }
@@ -488,6 +489,22 @@ async function commandLogs() {
   for (const row of result.logs) console.log(JSON.stringify(row));
 }
 
+async function commandInventory(args) {
+  const action = args[0];
+  if (action !== "export") {
+    throw new Error("expected inventory export");
+  }
+  const config = loadConfig();
+  const registry = loadRegistry(config);
+  console.log(JSON.stringify({
+    version: registry.version || 1,
+    nodeName: registry.nodeName || config.nodeName || os.hostname(),
+    exportedAt: new Date().toISOString(),
+    agents: Object.values(registry.agents || {}),
+    peers: registry.peers || {},
+  }, null, 2));
+}
+
 async function commandNode(args) {
   const action = args[0];
   if (action === "list") {
@@ -589,6 +606,7 @@ export async function main(args) {
   if (cmd === "send") return commandSend(rest);
   if (cmd === "inbox") return commandInbox(rest);
   if (cmd === "logs") return commandLogs();
+  if (cmd === "inventory") return commandInventory(rest);
   if (cmd === "node") return commandNode(rest);
   if (cmd === "install-service" || cmd === "uninstall-service") return commandService(cmd, rest);
   throw new Error(`unknown command: ${cmd}\n${usage()}`);
