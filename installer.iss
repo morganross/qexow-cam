@@ -19,6 +19,9 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 Name: "full"; Description: "Full local installation (Recommended)"
 Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
+[Tasks]
+Name: "preserve_state"; Description: "Keep old CAM registry/state data (skip full CAM home wipe)"; Flags: unchecked
+
 [Components]
 Name: "daemon"; Description: "CAM Daemon Service & CLI"; Types: full custom; Flags: fixed
 Name: "tray"; Description: "System Tray GUI & Shortcuts"; Types: full custom
@@ -129,11 +132,98 @@ begin
   end;
 end;
 
+procedure DeleteValueIfExists(RootKey: Integer; const Subkey, ValueName: string);
+begin
+  if RegValueExists(RootKey, Subkey, ValueName) then begin
+    RegDeleteValue(RootKey, Subkey, ValueName);
+  end;
+end;
+
 procedure RemoveDirIfExists(PathName: string);
 begin
   if DirExists(PathName) then begin
     DelTree(PathName, True, True, True);
   end;
+end;
+
+procedure DeleteLinkIfExists(PathName: string);
+begin
+  DeleteIfExists(PathName);
+end;
+
+function IsPathSeparator(CharValue: string): Boolean;
+begin
+  Result := (CharValue = '\') or (CharValue = '/');
+end;
+
+function NormalizePathForCompare(PathName: string): string;
+begin
+  Result := LowerCase(Trim(PathName));
+  while (Length(Result) > 0) and IsPathSeparator(Copy(Result, Length(Result), 1)) do begin
+    Delete(Result, Length(Result), 1);
+  end;
+end;
+
+function PathEquals(const LeftValue, RightValue: string): Boolean;
+begin
+  Result := NormalizePathForCompare(LeftValue) = NormalizePathForCompare(RightValue);
+end;
+
+function StripPathEntry(PathValue, EntryToRemove: string): string;
+var
+  Segments: TArrayOfString;
+  i: Integer;
+  NextValue: string;
+begin
+  Result := '';
+  if PathValue = '' then begin
+    exit;
+  end;
+  Segments := SplitString(PathValue, ';');
+  NextValue := '';
+  for i := 0 to GetArrayLength(Segments) - 1 do begin
+    if Trim(Segments[i]) = '' then begin
+      continue;
+    end;
+    if PathEquals(Segments[i], EntryToRemove) then begin
+      continue;
+    end;
+    if NextValue <> '' then begin
+      NextValue := NextValue + ';';
+    end;
+    NextValue := NextValue + Segments[i];
+  end;
+  Result := NextValue;
+end;
+
+procedure RemovePathEntryFromHive(RootKey: Integer; const Subkey, EntryToRemove: string);
+var
+  PathValue: string;
+  UpdatedValue: string;
+begin
+  if not RegQueryStringValue(RootKey, Subkey, 'Path', PathValue) then begin
+    exit;
+  end;
+  UpdatedValue := StripPathEntry(PathValue, EntryToRemove);
+  if UpdatedValue <> PathValue then begin
+    RegWriteExpandStringValue(RootKey, Subkey, 'Path', UpdatedValue);
+  end;
+end;
+
+procedure RemoveKnownPathEntries();
+begin
+  RemovePathEntryFromHive(HKEY_CURRENT_USER, 'Environment', ExpandConstant('{app}'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{app}'));
+  RemovePathEntryFromHive(HKEY_CURRENT_USER, 'Environment', ExpandConstant('{localappdata}\Programs\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_CURRENT_USER, 'Environment', ExpandConstant('{localappdata}\Programs\Codex Agent Manager'));
+  RemovePathEntryFromHive(HKEY_CURRENT_USER, 'Environment', ExpandConstant('{localappdata}\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{localappdata}\Programs\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{localappdata}\Programs\Codex Agent Manager'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{localappdata}\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{pf}\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{pf32}\Qexow CAM'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{pf}\Codex Agent Manager'));
+  RemovePathEntryFromHive(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', ExpandConstant('{pf32}\Codex Agent Manager'));
 end;
 
 procedure ResetCamRuntimeStateForInstall();
@@ -152,6 +242,86 @@ begin
   DeleteIfExists(CamHome + '\tray.lock');
   DeleteIfExists(CamHome + '\service.json');
   RemoveDirIfExists(CamHome + '\logs');
+end;
+
+procedure ResetCamProcessMarkersOnly();
+var
+  CamHome: string;
+  LegacyHome: string;
+begin
+  CamHome := ExpandConstant('{%USERPROFILE}\.qexow-cam');
+  LegacyHome := ExpandConstant('{%USERPROFILE}\.codex-agent-manager');
+
+  DeleteIfExists(CamHome + '\daemon.pid');
+  DeleteIfExists(CamHome + '\daemon.json');
+  DeleteIfExists(CamHome + '\tray.lock');
+  DeleteIfExists(CamHome + '\service.json');
+  DeleteIfExists(LegacyHome + '\daemon.pid');
+  DeleteIfExists(LegacyHome + '\daemon.json');
+  DeleteIfExists(LegacyHome + '\tray.lock');
+  DeleteIfExists(LegacyHome + '\service.json');
+end;
+
+procedure RemoveLegacyCamLaunchPoints();
+begin
+  DeleteScheduledTask('CodexAgentManager');
+  DeleteScheduledTask('Codex Agent Manager');
+  DeleteScheduledTask('QexowCam');
+  DeleteScheduledTask('Qexow CAM');
+
+  DeleteIfExists(ExpandConstant('{userstartup}\CodexAgentManager.cmd'));
+  DeleteIfExists(ExpandConstant('{userstartup}\QexowCam.cmd'));
+  DeleteIfExists(ExpandConstant('{userstartup}\Codex Agent Manager.cmd'));
+  DeleteLinkIfExists(ExpandConstant('{userstartup}\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{commonstartup}\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userdesktop}\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{commondesktop}\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userdesktop}\Codex Agent Manager.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{commondesktop}\Codex Agent Manager.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{group}\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{group}\Uninstall Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userprograms}\Qexow CAM\Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userprograms}\Qexow CAM\Uninstall Qexow CAM.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userprograms}\Codex Agent Manager\Codex Agent Manager.lnk'));
+  DeleteLinkIfExists(ExpandConstant('{userprograms}\Codex Agent Manager\Uninstall Codex Agent Manager.lnk'));
+  RemoveDirIfExists(ExpandConstant('{userprograms}\Qexow CAM'));
+  RemoveDirIfExists(ExpandConstant('{userprograms}\Codex Agent Manager'));
+  RemoveDirIfExists(ExpandConstant('{commonprograms}\Qexow CAM'));
+  RemoveDirIfExists(ExpandConstant('{commonprograms}\Codex Agent Manager'));
+
+  DeleteValueIfExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM');
+  DeleteValueIfExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM GUI');
+  DeleteValueIfExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM Tray Proof');
+  DeleteValueIfExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Codex Agent Manager');
+  DeleteValueIfExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Codex Agent Manager Tray');
+  DeleteValueIfExists(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM');
+  DeleteValueIfExists(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM GUI');
+  DeleteValueIfExists(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Qexow CAM Tray Proof');
+  DeleteValueIfExists(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Codex Agent Manager');
+  DeleteValueIfExists(HKEY_LOCAL_MACHINE, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Codex Agent Manager Tray');
+
+  RemoveKnownPathEntries();
+end;
+
+procedure RemoveKnownInstallRoots();
+begin
+  RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Qexow CAM'));
+  RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Codex Agent Manager'));
+  RemoveDirIfExists(ExpandConstant('{localappdata}\Qexow CAM'));
+  RemoveDirIfExists(ExpandConstant('{pf32}\Qexow CAM'));
+  RemoveDirIfExists(ExpandConstant('{pf32}\Codex Agent Manager'));
+  RemoveDirIfExists(ExpandConstant('{pf}\Codex Agent Manager'));
+end;
+
+procedure FullWipeCamHomes();
+begin
+  RemoveDirIfExists(ExpandConstant('{%USERPROFILE}\.qexow-cam'));
+  RemoveDirIfExists(ExpandConstant('{%USERPROFILE}\.codex-agent-manager'));
+end;
+
+function ShouldPreservePriorState(): Boolean;
+begin
+  Result := WizardIsTaskSelected('preserve_state');
 end;
 
 function IsHeadlessInstall(): Boolean;
@@ -177,19 +347,23 @@ begin
   KillProcess('cam-tray.exe');
   KillProcess('tray_windows_release.exe');
 
-  // Remove old task/startup launch points so only the current tray command starts.
-  DeleteScheduledTask('CodexAgentManager');
-  DeleteScheduledTask('Codex Agent Manager');
-  DeleteScheduledTask('QexowCam');
-  DeleteIfExists(ExpandConstant('{userstartup}\CodexAgentManager.cmd'));
-  DeleteIfExists(ExpandConstant('{userstartup}\QexowCam.cmd'));
-  DeleteIfExists(ExpandConstant('{userstartup}\Codex Agent Manager.cmd'));
-  RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Qexow CAM'));
-  RemoveDirIfExists(ExpandConstant('{localappdata}\Programs\Codex Agent Manager'));
-  RemoveDirIfExists(ExpandConstant('{localappdata}\Qexow CAM'));
-  ResetCamRuntimeStateForInstall();
-
   Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssInstall then begin
+    exit;
+  end;
+
+  RemoveLegacyCamLaunchPoints();
+  RemoveKnownInstallRoots();
+
+  if ShouldPreservePriorState() then begin
+    ResetCamProcessMarkersOnly();
+  end else begin
+    FullWipeCamHomes();
+  end;
 end;
 
 function NeedsAddPath(Param: string): boolean;

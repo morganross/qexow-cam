@@ -17,7 +17,9 @@ $staleRoots = @(
   (Join-Path $env:LOCALAPPDATA "Programs\Qexow CAM"),
   (Join-Path $env:LOCALAPPDATA "Programs\Codex Agent Manager"),
   (Join-Path $env:LOCALAPPDATA "Qexow CAM"),
-  "C:\Program Files (x86)\Qexow CAM"
+  "C:\Program Files (x86)\Qexow CAM",
+  "C:\Program Files (x86)\Codex Agent Manager",
+  "C:\Program Files\Codex Agent Manager"
 )
 
 $problems = New-Object System.Collections.Generic.List[string]
@@ -56,7 +58,7 @@ foreach ($name in @("CodexAgentManager.cmd", "QexowCam.cmd", "Codex Agent Manage
 }
 
 foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run")) {
-  foreach ($runName in @("Qexow CAM GUI", "Qexow CAM Tray Proof", "Codex Agent Manager", "Codex Agent Manager Tray")) {
+  foreach ($runName in @("Qexow CAM", "Qexow CAM GUI", "Qexow CAM Tray Proof", "Codex Agent Manager", "Codex Agent Manager Tray")) {
     try {
       $value = (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction Stop).$runName
       if ($value) {
@@ -64,6 +66,40 @@ foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HK
       }
     } catch {
     }
+  }
+}
+
+$shortcutPaths = @(
+  (Join-Path $startup "Qexow CAM.lnk"),
+  (Join-Path $startup "Codex Agent Manager.lnk"),
+  (Join-Path ([Environment]::GetFolderPath("Desktop")) "Qexow CAM.lnk"),
+  (Join-Path ([Environment]::GetFolderPath("Desktop")) "Codex Agent Manager.lnk"),
+  (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Qexow CAM"),
+  (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Codex Agent Manager")
+)
+
+foreach ($path in $shortcutPaths) {
+  if (Test-Path -LiteralPath $path) {
+    $problems.Add("stale shortcut/program group remains at $path")
+  }
+}
+
+foreach ($envKey in @(
+  "HKCU:\Environment",
+  "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+)) {
+  try {
+    $pathValue = (Get-ItemProperty -Path $envKey -Name Path -ErrorAction Stop).Path
+    foreach ($badFragment in @(
+      "Qexow CAM",
+      "Codex Agent Manager"
+    )) {
+      if ($pathValue -like "*$badFragment*" -and $pathValue -notlike "*$ExpectedRoot*") {
+        $problems.Add("stale PATH fragment remains in $envKey -> $pathValue")
+        break
+      }
+    }
+  } catch {
   }
 }
 
