@@ -562,15 +562,24 @@ async function commandNode(args) {
 
 async function commandService(cmd, args) {
   logEvent("cli.service.action", { command: cmd, args });
-  initConfig();
   const opts = parseOptions(args);
   const name = opts.name || "QexowCam";
   const headless = !!opts.headless;
   const serviceFile = path.join(paths().root, "service.json");
+  if (cmd === "uninstall-service") {
+    try {
+      fs.rmSync(serviceFile, { force: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    console.log(`removed uninstall-service metadata at ${serviceFile}`);
+    return;
+  }
+  initConfig();
   writeJsonAtomic(serviceFile, {
     name,
     headless,
-    enabled: cmd === "install-service",
+    enabled: true,
     updatedAt: new Date().toISOString(),
   });
   console.log(`recorded ${cmd} in ${serviceFile}; start the daemon with 'cam daemon start'`);

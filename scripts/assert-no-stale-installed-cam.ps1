@@ -61,7 +61,13 @@ foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HK
   foreach ($runName in @("Qexow CAM", "Qexow CAM GUI", "Qexow CAM Tray Proof", "Codex Agent Manager", "Codex Agent Manager Tray")) {
     try {
       $value = (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction Stop).$runName
-      if ($value) {
+      $valueText = [string]$value
+      $isExpectedCurrentEntry =
+        $runKey -eq "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -and
+        $runName -eq "Qexow CAM" -and
+        $valueText -like "*$ExpectedRoot*" -and
+        $valueText -like "*qexow-cam-gui.exe*"
+      if ($value -and -not $isExpectedCurrentEntry) {
         $problems.Add("stale Run entry $runKey\$runName -> $value")
       }
     } catch {
