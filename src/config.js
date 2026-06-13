@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { ensureDirs, paths, readJson, writeJsonAtomic } from "./paths.js";
 
+export const DEFAULT_CAM_PORT = 37631;
+
 export function defaultCodexPath() {
   if (process.env.CAM_CODEX_EXE) return process.env.CAM_CODEX_EXE;
   if (process.platform === "win32") {
@@ -21,10 +23,8 @@ export function initConfig({ force = false } = {}) {
   const p = ensureDirs();
   const existing = readJson(p.config, null);
   if (existing && !force) return existing;
-  const port = process.env.CAM_PORT ? Number(process.env.CAM_PORT) : null;
-  if (!port) {
-    throw new Error("Initialization Error: CAM_PORT environment variable must be specified to initialize config. Fallbacks are disabled.");
-  }
+  const configuredPort = process.env.CAM_PORT ? Number(process.env.CAM_PORT) : null;
+  const port = configuredPort || DEFAULT_CAM_PORT;
   const config = {
     version: 1,
     nodeName: defaultNodeName(),
@@ -65,7 +65,7 @@ export function ensureLocalToken() {
 }
 
 export function localApiBase(config = loadConfig()) {
-  const port = config.port || process.env.CAM_PORT;
+  const port = config.port || process.env.CAM_PORT || DEFAULT_CAM_PORT;
   if (!port) {
     throw new Error("Configuration Error: CAM port is not configured.");
   }

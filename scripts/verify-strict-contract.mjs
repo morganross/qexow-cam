@@ -7,6 +7,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const pkg = JSON.parse(read("package.json"));
 const daemon = read("src/daemon.js");
 const cli = read("src/cli.js");
+const config = read("src/config.js");
 const antigravity = read("src/antigravity.js");
 const gui = read("src/windows/QexowCamGui.cs");
 const installer = read("installer.iss");
@@ -17,6 +18,7 @@ const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
 
 const checks = [
   ["package version is 2.1.32", pkg.version === "2.1.32"],
+  ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
   ["daemon exposes CAM_VERSION 2.1.32", daemon.includes('const CAM_VERSION = "2.1.32";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
@@ -53,7 +55,7 @@ const checks = [
   ["GUI blocks stale/unbound preflight", gui.includes('String.Equals(status, "stale"') && gui.includes('String.Equals(status, "unbound"')],
   ["installer deletes runtime map on reinstall", installer.includes("ResetCamRuntimeStateForInstall") && installer.includes("DeleteIfExists(CamHome + '\\agents.json')")],
   ["installer uses valid USERPROFILE env constant", installer.includes("ExpandConstant('{%USERPROFILE}\\.qexow-cam')") && !installer.includes("{userprofile}")],
-  ["uninstaller removes all CAM local state", installer.includes('Type: filesandordirs; Name: "{%USERPROFILE}\\.qexow-cam"')],
+  ["uninstaller removes all CAM local state", installer.includes("procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);") && installer.includes("FullWipeCamHomes();")],
   ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RemoveDirIfExists")],
   ["installer has no PowerShell cleanup path", !installer.includes("powershell.exe") && !installer.includes("RunPreinstallCleanupPowerShell")],
   ["runtime and installer have no Python discovery payload", !daemon.includes("query_threads.py") && !gui.includes("query_threads.py") && !installer.includes("query_threads.py")],

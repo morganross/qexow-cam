@@ -20,7 +20,7 @@ Name: "full"; Description: "Full local installation (Recommended)"
 Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
 [Tasks]
-Name: "preserve_state"; Description: "Keep old CAM registry/state data (skip full CAM home wipe)"; Flags: unchecked
+Name: "preserve_state"; Description: "Keep old CAM registry/state data (skip deleting old CAM registry/state data)"; Flags: unchecked
 
 [Components]
 Name: "daemon"; Description: "CAM Daemon Service & CLI"; Types: full custom; Flags: fixed
@@ -99,7 +99,6 @@ Filename: "{app}\cam.exe"; Parameters: "uninstall-service"; Flags: runhidden; Ru
 Type: files; Name: "{userstartup}\CodexAgentManager.cmd"
 Type: files; Name: "{userstartup}\QexowCam.cmd"
 Type: files; Name: "{userstartup}\Codex Agent Manager.cmd"
-Type: filesandordirs; Name: "{%USERPROFILE}\.qexow-cam"
 Type: filesandordirs; Name: "{localappdata}\Programs\Qexow CAM"
 Type: filesandordirs; Name: "{localappdata}\Programs\Codex Agent Manager"
 Type: filesandordirs; Name: "{localappdata}\Qexow CAM"
@@ -169,29 +168,112 @@ begin
   Result := NormalizePathForCompare(LeftValue) = NormalizePathForCompare(RightValue);
 end;
 
+function ReadTrimmedFile(PathName: string): string;
+var
+  Value: AnsiString;
+begin
+  Result := '';
+  if not FileExists(PathName) then begin
+    exit;
+  end;
+  if LoadStringFromFile(PathName, Value) then begin
+    Result := Trim(String(Value));
+  end;
+end;
+
+function OverrideFilePath(FileName: string): string;
+begin
+  Result := ExpandConstant('{app}\' + FileName);
+end;
+
+function GetCamHomePath(): string;
+begin
+  Result := ExpandConstant('{param:CAMHOME|}');
+  if Trim(Result) = '' then begin
+    Result := GetEnv('CAM_HOME');
+  end;
+  if Trim(Result) = '' then begin
+    Result := ReadTrimmedFile(OverrideFilePath('cam-home-override.txt'));
+  end;
+  if Trim(Result) = '' then begin
+    Result := ExpandConstant('{%USERPROFILE}\.qexow-cam');
+  end;
+end;
+
+function GetLegacyCamHomePath(): string;
+begin
+  Result := ExpandConstant('{param:LEGACYCAMHOME|}');
+  if Trim(Result) = '' then begin
+    Result := GetEnv('CAM_LEGACY_HOME');
+  end;
+  if Trim(Result) = '' then begin
+    Result := ReadTrimmedFile(OverrideFilePath('legacy-cam-home-override.txt'));
+  end;
+  if Trim(Result) = '' then begin
+    Result := ExpandConstant('{%USERPROFILE}\.codex-agent-manager');
+  end;
+end;
+
+procedure PersistCleanupOverrides();
+var
+  CamHomeOverride: string;
+  LegacyHomeOverride: string;
+begin
+  CamHomeOverride := Trim(ExpandConstant('{param:CAMHOME|}'));
+  if CamHomeOverride = '' then begin
+    CamHomeOverride := Trim(GetEnv('CAM_HOME'));
+  end;
+  LegacyHomeOverride := Trim(ExpandConstant('{param:LEGACYCAMHOME|}'));
+  if LegacyHomeOverride = '' then begin
+    LegacyHomeOverride := Trim(GetEnv('CAM_LEGACY_HOME'));
+  end;
+
+  if CamHomeOverride <> '' then begin
+    SaveStringToFile(OverrideFilePath('cam-home-override.txt'), CamHomeOverride, False);
+  end else begin
+    DeleteIfExists(OverrideFilePath('cam-home-override.txt'));
+  end;
+
+  if LegacyHomeOverride <> '' then begin
+    SaveStringToFile(OverrideFilePath('legacy-cam-home-override.txt'), LegacyHomeOverride, False);
+  end else begin
+    DeleteIfExists(OverrideFilePath('legacy-cam-home-override.txt'));
+  end;
+end;
+
 function StripPathEntry(PathValue, EntryToRemove: string): string;
 var
-  Segments: TArrayOfString;
-  i: Integer;
+  RemainingValue: string;
+  Segment: string;
+  SeparatorPos: Integer;
   NextValue: string;
 begin
   Result := '';
   if PathValue = '' then begin
     exit;
   end;
-  Segments := SplitString(PathValue, ';');
+  RemainingValue := PathValue;
   NextValue := '';
-  for i := 0 to GetArrayLength(Segments) - 1 do begin
-    if Trim(Segments[i]) = '' then begin
-      continue;
+  while True do begin
+    SeparatorPos := Pos(';', RemainingValue);
+    if SeparatorPos > 0 then begin
+      Segment := Copy(RemainingValue, 1, SeparatorPos - 1);
+      Delete(RemainingValue, 1, SeparatorPos);
+    end else begin
+      Segment := RemainingValue;
+      RemainingValue := '';
     end;
-    if PathEquals(Segments[i], EntryToRemove) then begin
-      continue;
+    if Trim(Segment) <> '' then begin
+      if not PathEquals(Segment, EntryToRemove) then begin
+        if NextValue <> '' then begin
+          NextValue := NextValue + ';';
+        end;
+        NextValue := NextValue + Segment;
+      end;
     end;
-    if NextValue <> '' then begin
-      NextValue := NextValue + ';';
+    if RemainingValue = '' then begin
+      break;
     end;
-    NextValue := NextValue + Segments[i];
   end;
   Result := NextValue;
 end;
@@ -230,7 +312,7 @@ procedure ResetCamRuntimeStateForInstall();
 var
   CamHome: string;
 begin
-  CamHome := ExpandConstant('{%USERPROFILE}\.qexow-cam');
+  CamHome := GetCamHomePath();
 
   // Reinstall starts with a clean runtime map and message/test history.
   DeleteIfExists(CamHome + '\agents.json');
@@ -249,8 +331,8 @@ var
   CamHome: string;
   LegacyHome: string;
 begin
-  CamHome := ExpandConstant('{%USERPROFILE}\.qexow-cam');
-  LegacyHome := ExpandConstant('{%USERPROFILE}\.codex-agent-manager');
+  CamHome := GetCamHomePath();
+  LegacyHome := GetLegacyCamHomePath();
 
   DeleteIfExists(CamHome + '\daemon.pid');
   DeleteIfExists(CamHome + '\daemon.json');
@@ -315,8 +397,8 @@ end;
 
 procedure FullWipeCamHomes();
 begin
-  RemoveDirIfExists(ExpandConstant('{%USERPROFILE}\.qexow-cam'));
-  RemoveDirIfExists(ExpandConstant('{%USERPROFILE}\.codex-agent-manager'));
+  RemoveDirIfExists(GetCamHomePath());
+  RemoveDirIfExists(GetLegacyCamHomePath());
 end;
 
 function ShouldPreservePriorState(): Boolean;
@@ -364,6 +446,17 @@ begin
   end else begin
     FullWipeCamHomes();
   end;
+
+  PersistCleanupOverrides();
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep <> usUninstall then begin
+    exit;
+  end;
+
+  FullWipeCamHomes();
 end;
 
 function NeedsAddPath(Param: string): boolean;

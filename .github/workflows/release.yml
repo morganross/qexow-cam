@@ -92,6 +92,9 @@ jobs:
         }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\cam.exe")) { throw "Installed cam.exe missing" }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\qexow-cam-gui.exe")) { throw "Installed GUI missing" }
+        if (Test-Path (Join-Path $camHome "agents.json")) { throw "Reinstall did not remove stale agents.json map" }
+        if (Test-Path (Join-Path $camHome "mailbox.jsonl")) { throw "Reinstall did not remove stale mailbox.jsonl" }
+        if (Test-Path (Join-Path $legacyCamHome "agents.json")) { throw "Reinstall did not remove legacy agents.json map" }
         if (Test-Path $camHome) { throw "Default reinstall did not fully remove CAM home $camHome" }
         if (Test-Path $legacyCamHome) { throw "Default reinstall did not fully remove legacy CAM home $legacyCamHome" }
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\assert-no-stale-installed-cam.ps1

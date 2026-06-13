@@ -17,7 +17,7 @@
 8. Sent an API-level diagnostic reply to `CAM test, Kexau CAM test suite mailbox` and confirmed the daemon returned `received:true`, `queued:false`, and `message.delivery:"received"`.
 
 ## Evaluation & Success Criteria
-- **State Cleanup Verification:** PASS. The default reinstall removed stale per-user install roots and wiped the prior CAM state homes. The preserve-state installer mode is now a separate path that must be selected explicitly.
+- **State Cleanup Verification:** PASS. The default reinstall removed stale per-user install roots and wiped the prior CAM state homes. The keep-state installer checkbox is now a separate path that must be selected explicitly.
 - **Stale Install Auditor:** PASS. `scripts\assert-no-stale-installed-cam.ps1` reported no stale CAM installs, processes, startup commands, or old Run entries outside `C:\Program Files\Qexow CAM`.
 - **Daemon Status Verification:** PASS. The `/health` endpoint returned:
   ```json
@@ -32,7 +32,7 @@
 - **Lifecycle Verification:** PASS. Exactly one `qexow-cam-gui.exe` and one `cam.exe` were running after install.
 - **Strict Test Verification:** PASS for API-level negative case. Strict send failed immediately on an unknown target with `queued:false`.
 - **Diagnostic Reply Semantics:** PASS at API level. The dedicated GUI-test mailbox now returns `delivery:"received"` for successful intake; a queued-only matching reply is evidence, not a pass condition.
-- **Installer Log Verification:** PASS. The Inno log recorded `Installation process succeeded`. The preinstall cleanup log recorded removal of stale per-user CAM folders and the default reinstall path now expects a full CAM-home wipe unless preserve-state is selected.
+- **Installer Log Verification:** PASS. The Inno log recorded `Installation process succeeded`. The preinstall cleanup log recorded removal of stale per-user CAM folders and the default reinstall path now expects a full CAM-home wipe unless the keep-state checkbox is selected.
 
 ## Notes
 The installed GUI still needs a human-visible positive round-trip click against a real selected agent for final UX confirmation. The underlying daemon semantics that caused the false pass were verified directly: mailbox receipt is now `received`, and strict send failure does not queue.
