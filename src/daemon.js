@@ -43,7 +43,7 @@ import {
   NODE_DISCOVERY_REQUEST_TYPE,
   parseNodeDiscoveryEvidence,
 } from "./node-discovery.js";
-import { discoverPeerFactsFromMarkdown } from "./peer-doc-discovery.js";
+import { discoverPeerFactsFromMarkdown, discoverSshKeyPathsFromMarkdown } from "./peer-doc-discovery.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
@@ -205,6 +205,7 @@ export class AgentManagerDaemon {
     this.peerSyncInterval = null;
     this.skippedThreadReasons = new Map();
     this.peerProbeAttempts = new Map();
+    this.docKeyPaths = [];
   }
 
   queueMessage(message) {
@@ -277,9 +278,7 @@ export class AgentManagerDaemon {
     await this.appServer.start();
     this.#ensureBuiltinMailboxAgents();
     this.#restorePeerTransportFromBackups();
-    this.#refreshDocPeerFacts();
-    void this.#probeDocDiscoveredPeers();
-    void this.#syncKnownPeers();
+    void this.#runPeerDiscoveryPass("startup");
     for (const agent of listAgents(this.config)) {
       if (agent.threadId) this.threadToAgent.set(agent.threadId, agent.name);
     }
@@ -288,7 +287,7 @@ export class AgentManagerDaemon {
       void this.syncActiveThreads();
     }, 30000);
     this.peerSyncInterval = setInterval(() => {
-      void this.#syncKnownPeers();
+      void this.#runPeerDiscoveryPass("interval");
     }, REMOTE_SYNC_INTERVAL_MS);
     this.appServer.on("turn/started", ({ threadId, turn }) => {
       const name = this.threadToAgent.get(threadId);
@@ -502,6 +501,9 @@ export class AgentManagerDaemon {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(res, 200, { ok: true, agents: listAgents(this.config) });
+      }
+      if (url.pathname === "/peers" && req.method === "GET") {
+        return json(res, 200, this.#peerDiagnosticsPayload());
       }
       if (url.pathname === "/agents/create" && req.method === "POST") {
         const body = await readBody(req);
@@ -2037,11 +2039,16 @@ export class AgentManagerDaemon {
   #refreshDocPeerFacts() {
     try {
       const rows = discoverPeerFactsFromMarkdown({ codexHome: this.config.codexHome });
+      this.docKeyPaths = discoverSshKeyPathsFromMarkdown({ codexHome: this.config.codexHome });
       const knownPeers = this.#canonicalPeerNames();
       const aliases = new Map([
         ["production-frontend", "prod-frontend"],
         ["production-backend", "prod-backend"],
         ["racknerd-vps-webmail", "racknerd-vpn-codex"],
+        ["frontend-dev-frontend", "frontend"],
+        ["backend-dev-backend", "backend"],
+        ["copilotkit-assistant", "copilotkit"],
+        ["racknerd-vps", "racknerd-vpn-codex"],
       ]);
       for (const row of rows) {
         const targetName = knownPeers.has(row.peerName) ? row.peerName : (aliases.get(row.peerName) || null);
@@ -2068,14 +2075,14 @@ export class AgentManagerDaemon {
             files: row.files.length,
             candidateIps: row.candidateIps,
             candidateSshTargets: row.candidateSshTargets,
-            probeEligible: !!peer.key,
+            probeEligible: this.#registryKeyPool(loadRegistry(this.config)).length > 0,
           });
           appendEvent("peer.discovery.fallback.docs", {
             peerName: targetName,
             files: row.files.length,
             candidateIps: row.candidateIps,
             candidateSshTargets: row.candidateSshTargets,
-            probeEligible: !!peer.key,
+            probeEligible: this.#registryKeyPool(loadRegistry(this.config)).length > 0,
           });
         }
       }
@@ -2245,6 +2252,15 @@ export class AgentManagerDaemon {
             ssh: `${username}@${ip}`,
             keyOwner: verified.owner,
           });
+          try {
+            await this.#syncSinglePeer(updated);
+          } catch (error) {
+            this.log("peer.discovery.probe.sync_failed", {
+              peerName: peer.name,
+              ssh: `${username}@${ip}`,
+              error: error.message,
+            });
+          }
           break;
         }
         const refreshed = getPeer(this.config, peer.name);
@@ -2261,9 +2277,27 @@ export class AgentManagerDaemon {
       const key = peer?.key ? String(peer.key) : "";
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      pool.push({ owner: peer.name, key });
+      pool.push({ owner: peer.name, key, source: "registry" });
+    }
+    for (const row of this.docKeyPaths || []) {
+      const key = String(row?.keyPath || "");
+      if (!key || seen.has(key) || !fs.existsSync(key)) continue;
+      seen.add(key);
+      pool.push({ owner: row.file || "docs", key, source: "docs" });
     }
     return pool;
+  }
+
+  async #runPeerDiscoveryPass(source = "manual") {
+    this.log("peer.discovery.pass.start", { source });
+    try {
+      this.#refreshDocPeerFacts();
+      await this.#probeDocDiscoveredPeers();
+      await this.#syncKnownPeers();
+      this.log("peer.discovery.pass.complete", { source });
+    } catch (error) {
+      this.log("peer.discovery.pass.failed", { source, error: error.message });
+    }
   }
 
   #candidateUsernames(peer) {
@@ -2331,6 +2365,98 @@ export class AgentManagerDaemon {
         });
       });
     });
+  }
+
+  #peerDiagnosticsPayload() {
+    const registry = loadRegistry(this.config);
+    const peers = listPeers(this.config).map((peer) => this.#describePeer(registry, peer));
+    const summary = {
+      total: peers.length,
+      codexManaged: peers.filter((peer) => peer.transport === "codex-managed").length,
+      docMatched: peers.filter((peer) => peer.docFilesCount > 0).length,
+      probeReady: peers.filter((peer) => peer.state === "probe-ready").length,
+      missingIp: peers.filter((peer) => peer.state === "missing-ip").length,
+      missingKey: peers.filter((peer) => peer.state === "missing-key").length,
+      missingUsername: peers.filter((peer) => peer.state === "missing-username").length,
+      verified: peers.filter((peer) => peer.state === "verified").length,
+      mirrored: peers.filter((peer) => peer.state === "mirrored").length,
+      syncFailed: peers.filter((peer) => peer.state === "sync-failed").length,
+      availableKeys: this.#registryKeyPool(registry).length,
+      docKeyPaths: (this.docKeyPaths || []).length,
+    };
+    return { ok: true, peers, summary };
+  }
+
+  #describePeer(registry, peer) {
+    const doc = peer?.docDiscovery || {};
+    const remoteSync = peer?.remoteSync || {};
+    const ssh = String(peer?.ssh || "");
+    const candidateIps = this.#mergeArrays(
+      doc.candidateIps || [],
+      ssh.includes("@") ? [ssh.split("@")[1]] : [],
+    );
+    const candidateUsernames = this.#candidateUsernames(peer);
+    const docFiles = doc.files || [];
+    const keyPool = this.#registryKeyPool(registry);
+    const hasAnyKey = keyPool.length > 0;
+    const mirroredAgents = Array.isArray(remoteSync.mirroredAgents) ? remoteSync.mirroredAgents.length : 0;
+    const verifiedSsh = peer?.transport === "ssh" && ssh.includes("@") && !!peer?.key;
+    const blockers = [];
+    let state = "codex-alias-only";
+
+    if (remoteSync?.syncedAt && mirroredAgents > 0) {
+      state = "mirrored";
+    } else if (remoteSync?.syncedAt && mirroredAgents === 0 && verifiedSsh) {
+      state = "verified";
+    } else if (verifiedSsh) {
+      state = "verified";
+    } else if (!docFiles.length) {
+      state = "needs-doc-match";
+      blockers.push("No canonical docs match yet.");
+    } else if (!candidateIps.length) {
+      state = "missing-ip";
+      blockers.push("Docs matched this node, but no candidate IP was scraped.");
+    } else if (!candidateUsernames.length) {
+      state = "missing-username";
+      blockers.push("Candidate IPs exist, but no SSH username was found.");
+    } else if (!hasAnyKey) {
+      state = "missing-key";
+      blockers.push("No local SSH key path was discovered or registered.");
+    } else {
+      state = "probe-ready";
+    }
+
+    if (remoteSync?.syncedAt && mirroredAgents === 0 && verifiedSsh) {
+      blockers.push("SSH verified, but remote CAM inventory returned zero mirrored agents.");
+    }
+    if (verifiedSsh && !remoteSync?.syncedAt) {
+      blockers.push("SSH verified, waiting for remote CAM inventory sync.");
+    }
+
+    return {
+      name: peer?.name || "",
+      transport: peer?.transport || "",
+      codexDisplayName: peer?.codexDisplayName || "",
+      codexHostId: peer?.codexHostId || "",
+      ssh: ssh,
+      key: peer?.key || "",
+      keySource: peer?.docProbe?.recoveredFromRegistryKeyOwner || "",
+      state,
+      blockers,
+      blockerSummary: blockers.join(" "),
+      docFilesCount: docFiles.length,
+      candidateIps,
+      candidatePrivateIps: doc.candidatePrivateIps || [],
+      candidateSshTargets: doc.candidateSshTargets || [],
+      candidateHostnames: doc.candidateHostnames || [],
+      candidateUsernames,
+      mirroredAgents,
+      remoteRoot: remoteSync?.remoteRoot || peer?.remoteRoot || "",
+      remoteNodeName: remoteSync?.remoteNodeName || "",
+      syncedAt: remoteSync?.syncedAt || "",
+      discovered: peer?.discovered === true,
+      sourceFiles: docFiles,
+    };
   }
 
   #peerDiscoveryConflicts(existing, incoming) {

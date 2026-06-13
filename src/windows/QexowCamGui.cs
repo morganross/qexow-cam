@@ -122,7 +122,10 @@ namespace QexowCamGui
     {
         private readonly Action<string> log;
         private readonly Label daemonLabel;
+        private readonly Label overviewLabel;
+        private readonly Label discoveryLabel;
         private readonly Panel daemonLight;
+        private readonly DataGridView peersGrid;
         private readonly DataGridView agentsGrid;
         private readonly TextBox outputBox;
         private readonly Button refreshButton;
@@ -146,10 +149,12 @@ namespace QexowCamGui
 
             TableLayoutPanel root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
-            root.RowCount = 4;
+            root.RowCount = 6;
             root.ColumnCount = 1;
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 28));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
             Controls.Add(root);
@@ -179,6 +184,34 @@ namespace QexowCamGui
             daemonLabel.Location = new Point(44, 43);
             header.Controls.Add(daemonLabel);
 
+            Panel summaryPanel = new Panel();
+            summaryPanel.Dock = DockStyle.Fill;
+            summaryPanel.Padding = new Padding(16, 8, 16, 4);
+            root.Controls.Add(summaryPanel, 0, 1);
+
+            overviewLabel = new Label();
+            overviewLabel.Text = "Mappings summary pending...";
+            overviewLabel.AutoSize = true;
+            overviewLabel.Location = new Point(16, 6);
+            summaryPanel.Controls.Add(overviewLabel);
+
+            discoveryLabel = new Label();
+            discoveryLabel.Text = "Remote discovery summary pending...";
+            discoveryLabel.AutoSize = true;
+            discoveryLabel.Location = new Point(16, 28);
+            summaryPanel.Controls.Add(discoveryLabel);
+
+            peersGrid = new DataGridView();
+            peersGrid.Dock = DockStyle.Fill;
+            peersGrid.ReadOnly = true;
+            peersGrid.AllowUserToAddRows = false;
+            peersGrid.AllowUserToDeleteRows = false;
+            peersGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            peersGrid.MultiSelect = false;
+            peersGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            peersGrid.RowHeadersVisible = false;
+            root.Controls.Add(peersGrid, 0, 2);
+
             agentsGrid = new DataGridView();
             agentsGrid.Dock = DockStyle.Fill;
             agentsGrid.ReadOnly = true;
@@ -188,12 +221,12 @@ namespace QexowCamGui
             agentsGrid.MultiSelect = false;
             agentsGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             agentsGrid.RowHeadersVisible = false;
-            root.Controls.Add(agentsGrid, 0, 1);
+            root.Controls.Add(agentsGrid, 0, 3);
 
             Panel buttons = new Panel();
             buttons.Dock = DockStyle.Fill;
             buttons.Padding = new Padding(10, 8, 10, 8);
-            root.Controls.Add(buttons, 0, 2);
+            root.Controls.Add(buttons, 0, 4);
 
             refreshButton = new Button();
             refreshButton.Text = "Refresh";
@@ -222,7 +255,7 @@ namespace QexowCamGui
             outputBox.ReadOnly = true;
             outputBox.ScrollBars = ScrollBars.Both;
             outputBox.Font = new Font("Consolas", 9.0f);
-            root.Controls.Add(outputBox, 0, 3);
+            root.Controls.Add(outputBox, 0, 5);
 
             Load += delegate { RefreshAll(); };
         }
@@ -281,8 +314,19 @@ namespace QexowCamGui
             LoadAgentList:
                 try
                 {
+                    List<Dictionary<string, object>> peers = LoadPeers();
+                    InvokeUi(delegate
+                    {
+                        RenderPeers(peers);
+                        RenderPeerSummary(peers);
+                    });
+
                     List<Dictionary<string, object>> agents = LoadAgents();
-                    InvokeUi(delegate { RenderAgents(agents); });
+                    InvokeUi(delegate
+                    {
+                        RenderAgents(agents);
+                        RenderAgentSummary(agents);
+                    });
                     log("agents-loaded count=" + agents.Count);
                 }
                 catch (Exception ex)
@@ -339,14 +383,93 @@ namespace QexowCamGui
             if (agents.Count == 0)
             {
                 outputBox.Text = AppendLine(outputBox.Text, "Refreshing CAM status; discovery has not returned testable mappings yet.");
-                return;
             }
+        }
+
+        private void RenderPeers(List<Dictionary<string, object>> peers)
+        {
+            peersGrid.Columns.Clear();
+            peersGrid.Rows.Clear();
+            foreach (string column in new[] { "name", "state", "transport", "ssh", "candidateIps", "candidateUsers", "key", "mirrored", "remoteNode", "syncedAt", "blocker" })
+            {
+                peersGrid.Columns.Add(column, column);
+            }
+            peersGrid.Columns["name"].HeaderText = "peer";
+            peersGrid.Columns["state"].HeaderText = "state";
+            peersGrid.Columns["candidateIps"].HeaderText = "candidate IPs";
+            peersGrid.Columns["candidateUsers"].HeaderText = "users";
+            peersGrid.Columns["key"].HeaderText = "key";
+            peersGrid.Columns["mirrored"].HeaderText = "mirrored";
+            peersGrid.Columns["remoteNode"].HeaderText = "remote node";
+            peersGrid.Columns["syncedAt"].HeaderText = "last sync";
+            peersGrid.Columns["blocker"].HeaderText = "blocker";
+            peersGrid.Columns["name"].FillWeight = 16;
+            peersGrid.Columns["state"].FillWeight = 10;
+            peersGrid.Columns["transport"].FillWeight = 9;
+            peersGrid.Columns["ssh"].FillWeight = 16;
+            peersGrid.Columns["candidateIps"].FillWeight = 14;
+            peersGrid.Columns["candidateUsers"].FillWeight = 8;
+            peersGrid.Columns["key"].FillWeight = 7;
+            peersGrid.Columns["mirrored"].FillWeight = 6;
+            peersGrid.Columns["remoteNode"].FillWeight = 10;
+            peersGrid.Columns["syncedAt"].FillWeight = 10;
+            peersGrid.Columns["blocker"].FillWeight = 24;
+
+            foreach (Dictionary<string, object> peer in peers)
+            {
+                int rowIndex = peersGrid.Rows.Add(
+                    Value(peer, "name"),
+                    Value(peer, "state"),
+                    Value(peer, "transport"),
+                    Value(peer, "ssh"),
+                    JoinList(peer, "candidateIps"),
+                    JoinList(peer, "candidateUsernames"),
+                    String.IsNullOrWhiteSpace(Value(peer, "key")) ? "no" : "yes",
+                    Value(peer, "mirroredAgents"),
+                    Value(peer, "remoteNodeName"),
+                    ShortIso(Value(peer, "syncedAt")),
+                    Value(peer, "blockerSummary")
+                );
+                DataGridViewRow row = peersGrid.Rows[rowIndex];
+                Color color = Color.Gray;
+                string state = Value(peer, "state").ToLowerInvariant();
+                if (state == "mirrored") color = Color.LimeGreen;
+                else if (state == "verified" || state == "probe-ready") color = Color.DodgerBlue;
+                else if (state == "missing-key" || state == "missing-ip" || state == "missing-username" || state == "sync-failed") color = Color.OrangeRed;
+                row.DefaultCellStyle.ForeColor = color;
+            }
+        }
+
+        private void RenderAgentSummary(List<Dictionary<string, object>> agents)
+        {
             int testableCount = 0;
             foreach (Dictionary<string, object> agent in agents)
             {
                 if (IsAgentTestable(agent)) testableCount++;
             }
-            outputBox.Text = AppendLine(outputBox.Text, "Loaded " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited agent/session mappings.");
+            overviewLabel.Text = "Agent mappings: " + agents.Count + " total, " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited.";
+            if (agents.Count > 0)
+            {
+                outputBox.Text = AppendLine(outputBox.Text, "Loaded " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited agent/session mappings.");
+            }
+        }
+
+        private void RenderPeerSummary(List<Dictionary<string, object>> peers)
+        {
+            int mirrored = 0;
+            int missingKey = 0;
+            int missingIp = 0;
+            int probeReady = 0;
+            foreach (Dictionary<string, object> peer in peers)
+            {
+                string state = Value(peer, "state");
+                if (String.Equals(state, "mirrored", StringComparison.OrdinalIgnoreCase)) mirrored++;
+                if (String.Equals(state, "missing-key", StringComparison.OrdinalIgnoreCase)) missingKey++;
+                if (String.Equals(state, "missing-ip", StringComparison.OrdinalIgnoreCase)) missingIp++;
+                if (String.Equals(state, "probe-ready", StringComparison.OrdinalIgnoreCase)) probeReady++;
+            }
+            discoveryLabel.Text = "Remote discovery: " + peers.Count + " peers, " + mirrored + " mirrored, " + probeReady + " ready to probe, " + missingKey + " missing key, " + missingIp + " missing IP.";
+            outputBox.Text = AppendLine(outputBox.Text, "Remote discovery loaded " + peers.Count + " peer rows.");
         }
 
         private void TestSelectedAgent()
@@ -712,6 +835,16 @@ namespace QexowCamGui
             return agents;
         }
 
+        private List<Dictionary<string, object>> LoadPeers()
+        {
+            Dictionary<string, object> result = ApiGet("/peers");
+            if (result.ContainsKey("peers") && result["peers"] is ArrayList)
+            {
+                return ConvertAgentArray((ArrayList)result["peers"]);
+            }
+            return new List<Dictionary<string, object>>();
+        }
+
         private bool IsAgentTestable(Dictionary<string, object> agent)
         {
             string threadId = Value(agent, "threadId");
@@ -870,6 +1003,28 @@ namespace QexowCamGui
             string name = Value(agent, "name");
             if (!String.IsNullOrWhiteSpace(name)) return name;
             return Value(agent, "threadId");
+        }
+
+        private static string JoinList(Dictionary<string, object> map, string key)
+        {
+            if (map == null || !map.ContainsKey(key) || map[key] == null) return "";
+            ArrayList list = map[key] as ArrayList;
+            if (list == null) return Convert.ToString(map[key]);
+            List<string> values = new List<string>();
+            foreach (object item in list)
+            {
+                if (item == null) continue;
+                values.Add(Convert.ToString(item));
+            }
+            return String.Join(", ", values.ToArray());
+        }
+
+        private static string ShortIso(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return "";
+            DateTime parsed;
+            if (!DateTime.TryParse(value, out parsed)) return value;
+            return parsed.ToLocalTime().ToString("M/d HH:mm:ss");
         }
 
         private bool TryStartDaemon()

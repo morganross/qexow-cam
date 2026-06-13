@@ -4,7 +4,18 @@ import path from "node:path";
 
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
 const SSH_AT_IP_RE = /\b([a-z_][a-z0-9_-]*)@((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b/ig;
+const KEY_PATH_RE = /(?:[A-Za-z]:\\[^`"'|\r\n]+?\.(?:pem|ppk|key)|\/[A-Za-z0-9._/\-]+?\.(?:pem|ppk|key))/g;
 const CODE_FENCE_RE = /^```/;
+const SKIP_DIR_RE = /^(?:node_modules|dist|build|coverage|vendor|tmp|temp|out|release|releases)$/i;
+const PEER_NAME_ALIASES = new Map([
+  ["frontend-dev-frontend", "frontend"],
+  ["backend-dev-backend", "backend"],
+  ["production-frontend", "prod-frontend"],
+  ["production-backend", "prod-backend"],
+  ["copilotkit-assistant", "copilotkit"],
+  ["racknerd-vps", "racknerd-vpn-codex"],
+  ["racknerd-vps-webmail", "racknerd-vpn-codex"],
+]);
 
 function normalizeName(value) {
   return String(value || "")
@@ -19,6 +30,11 @@ function normalizeName(value) {
 
 function unique(values) {
   return [...new Set((values || []).filter(Boolean))];
+}
+
+function normalizePeerName(value) {
+  const normalized = normalizeName(value);
+  return PEER_NAME_ALIASES.get(normalized) || normalized;
 }
 
 function readJsonSafe(file, fallback = {}) {
@@ -58,6 +74,7 @@ function walkMarkdownFiles(root, out = [], depth = 0) {
   for (const entry of entries) {
     if (entry.name.startsWith(".git")) continue;
     if (/archive/i.test(entry.name)) continue;
+    if (SKIP_DIR_RE.test(entry.name)) continue;
     const full = path.join(root, entry.name);
     if (entry.isDirectory()) {
       walkMarkdownFiles(full, out, depth + 1);
@@ -73,8 +90,12 @@ function extractIpv4s(text) {
   return unique(String(text || "").match(IPV4_RE) || []);
 }
 
+function extractKeyPaths(text) {
+  return unique((String(text || "").match(KEY_PATH_RE) || []).map((value) => value.trim()));
+}
+
 function scanSection(sectionName, lines, file) {
-  const normalized = normalizeName(sectionName);
+  const normalized = normalizePeerName(sectionName);
   if (!normalized) return null;
   const ips = [];
   const privateIps = [];
@@ -88,7 +109,7 @@ function scanSection(sectionName, lines, file) {
     if (CODE_FENCE_RE.test(line.trim())) {
       inFence = !inFence;
     }
-    if (/key path|private key|authorized_keys|\.pem|plugin secret|password|username/i.test(line)) {
+    if (/plugin secret|password/i.test(line)) {
       // We intentionally do not scrape key material or credential lines.
       continue;
     }
@@ -123,6 +144,50 @@ function scanSection(sectionName, lines, file) {
   };
 }
 
+function splitTableRow(line) {
+  if (!String(line || "").trim().startsWith("|")) return [];
+  const parts = String(line)
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((part) => part.trim());
+  return parts;
+}
+
+function parseNodeInventoryTable(lines, file) {
+  const tables = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (!String(lines[index] || "").trim().startsWith("|")) continue;
+    const headerCells = splitTableRow(lines[index]);
+    const separatorCells = splitTableRow(lines[index + 1] || "");
+    if (!headerCells.length || headerCells.length < 2) continue;
+    if (!separatorCells.length || !separatorCells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
+    const headerMap = headerCells.map((cell) => normalizeName(cell));
+    const nodeIndex = headerMap.indexOf("node");
+    if (nodeIndex < 0) continue;
+    index += 2;
+    while (index < lines.length && String(lines[index] || "").trim().startsWith("|")) {
+      const rowCells = splitTableRow(lines[index]);
+      if (rowCells.length < headerCells.length) {
+        index += 1;
+        continue;
+      }
+      const row = {};
+      for (let cellIndex = 0; cellIndex < headerCells.length; cellIndex++) {
+        row[headerCells[cellIndex]] = rowCells[cellIndex] || "";
+      }
+      const sectionName = row[headerCells[nodeIndex]] || "";
+      const synthesizedLines = Object.entries(row).map(([key, value]) => `${key}: ${value}`);
+      const scanned = scanSection(sectionName, synthesizedLines, file);
+      if (scanned) tables.push(scanned);
+      index += 1;
+    }
+    index -= 1;
+  }
+  return tables;
+}
+
 function parseMarkdownFile(file) {
   let text = "";
   try {
@@ -135,11 +200,15 @@ function parseMarkdownFile(file) {
   let currentName = null;
   let currentLines = [];
   for (const line of lines) {
-    const heading = line.match(/^###\s+(.+?)\s*$/);
+    const heading = line.match(/^#{2,}\s+(.+?)\s*$/);
     if (heading) {
       if (currentName) {
-        const scanned = scanSection(currentName, currentLines, file);
-        if (scanned) sections.push(scanned);
+        if (normalizeName(currentName) === "node-inventory") {
+          sections.push(...parseNodeInventoryTable(currentLines, file));
+        } else {
+          const scanned = scanSection(currentName, currentLines, file);
+          if (scanned) sections.push(scanned);
+        }
       }
       currentName = heading[1];
       currentLines = [];
@@ -148,8 +217,12 @@ function parseMarkdownFile(file) {
     if (currentName) currentLines.push(line);
   }
   if (currentName) {
-    const scanned = scanSection(currentName, currentLines, file);
-    if (scanned) sections.push(scanned);
+    if (normalizeName(currentName) === "node-inventory") {
+      sections.push(...parseNodeInventoryTable(currentLines, file));
+    } else {
+      const scanned = scanSection(currentName, currentLines, file);
+      if (scanned) sections.push(scanned);
+    }
   }
   return sections;
 }
@@ -195,3 +268,31 @@ export function discoverPeerFactsFromMarkdown({ codexHome }) {
   }));
 }
 
+export function discoverSshKeyPathsFromMarkdown({ codexHome }) {
+  const roots = candidateRoots(codexHome);
+  const rows = [];
+  for (const root of roots) {
+    for (const file of walkMarkdownFiles(root)) {
+      let text = "";
+      try {
+        text = fs.readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      const pathsFound = extractKeyPaths(text);
+      for (const keyPath of pathsFound) {
+        rows.push({
+          file,
+          keyPath,
+        });
+      }
+    }
+  }
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = `${row.file}::${row.keyPath}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
