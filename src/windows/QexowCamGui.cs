@@ -407,7 +407,7 @@ namespace QexowCamGui
                     Dictionary<string, object> inboxResult = ApiGet("/inbox?agent=" + Uri.EscapeDataString(CamTestMailboxAgent) + "&wait=5");
                     string response = FindMailboxResponse(inboxResult, agentName, correlationId);
                     if (!String.IsNullOrWhiteSpace(response)) return response;
-                    lastSummary = SummarizeInbox(inboxResult);
+                    lastSummary = SummarizeInbox(inboxResult, agentName, correlationId);
                     InvokeUi(delegate
                     {
                         AppendOutput("STATE seen  no matching reply yet; " + lastSummary);
@@ -427,7 +427,7 @@ namespace QexowCamGui
             throw new Exception("Timed out waiting for a CAM inbox reply from " + agentName + " with testId=" + correlationId + ". " + lastSummary);
         }
 
-        private string FindMailboxResponse(Dictionary<string, object> inboxResult, string agentName, string correlationId)
+        private string FindMailboxResponse(Dictionary<string, object> inboxResult, string expectedAgentName, string correlationId)
         {
             ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
             if (messages == null) return "";
@@ -441,6 +441,18 @@ namespace QexowCamGui
                 bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
                     body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!idMatches) continue;
+                if (!String.Equals(sourceAgent, expectedAgentName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (Value(message, "targetAgent") != CamTestMailboxAgent)
+                {
+                    continue;
+                }
+                if (body.IndexOf("CAM_GUI_TEST_RESPONSE", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
                 if (String.IsNullOrWhiteSpace(body)) body = "(empty body)";
                 string header = "CAM REPLY MATCHED\r\n" +
                     "testId: " + correlationId + "\r\n" +
@@ -455,11 +467,41 @@ namespace QexowCamGui
             return "";
         }
 
-        private string SummarizeInbox(Dictionary<string, object> inboxResult)
+        private string SummarizeInbox(Dictionary<string, object> inboxResult, string expectedAgentName, string correlationId)
         {
             ArrayList messages = inboxResult != null && inboxResult.ContainsKey("messages") ? inboxResult["messages"] as ArrayList : null;
             if (messages == null) return CamTestMailboxAgent + " inbox unreadable";
+            string mismatch = FindMismatchedMailboxResponse(messages, expectedAgentName, correlationId);
+            if (!String.IsNullOrWhiteSpace(mismatch)) return CamTestMailboxAgent + " inbox messages=" + messages.Count + "; " + mismatch;
             return CamTestMailboxAgent + " inbox messages=" + messages.Count;
+        }
+
+        private string FindMismatchedMailboxResponse(ArrayList messages, string expectedAgentName, string correlationId)
+        {
+            for (int i = messages.Count - 1; i >= 0; i--)
+            {
+                Dictionary<string, object> message = messages[i] as Dictionary<string, object>;
+                if (message == null) continue;
+                string body = Value(message, "body");
+                string messageCorrelationId = Value(message, "correlationId");
+                bool idMatches = String.Equals(messageCorrelationId, correlationId, StringComparison.OrdinalIgnoreCase) ||
+                    body.IndexOf(correlationId, StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!idMatches) continue;
+                string sourceAgent = Value(message, "sourceAgent");
+                if (!String.Equals(sourceAgent, expectedAgentName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return "ignored same-testId reply from wrong sourceAgent=" + sourceAgent + "; expected=" + expectedAgentName;
+                }
+                if (Value(message, "targetAgent") != CamTestMailboxAgent)
+                {
+                    return "ignored same-testId reply to wrong targetAgent=" + Value(message, "targetAgent");
+                }
+                if (body.IndexOf("CAM_GUI_TEST_RESPONSE", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    return "ignored same-testId reply missing CAM_GUI_TEST_RESPONSE marker";
+                }
+            }
+            return "";
         }
 
         private static string NestedValue(Dictionary<string, object> map, params string[] keys)
