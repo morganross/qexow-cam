@@ -12,8 +12,8 @@ const gui = read("src/windows/QexowCamGui.cs");
 const installer = read("installer.iss");
 
 const checks = [
-  ["package version is 2.1.24", pkg.version === "2.1.24"],
-  ["daemon exposes CAM_VERSION 2.1.24", daemon.includes('const CAM_VERSION = "2.1.24";')],
+  ["package version is 2.1.25", pkg.version === "2.1.25"],
+  ["daemon exposes CAM_VERSION 2.1.25", daemon.includes('const CAM_VERSION = "2.1.25";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],

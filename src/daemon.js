@@ -34,7 +34,7 @@ import { bootstrapAntigravity } from "./antigravity.js";
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.24";
+const CAM_VERSION = "2.1.25";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 
 export function showWindowsAlert(title, message, iconType = "error") {

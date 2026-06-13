@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.24
+AppVersion=2.1.25
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -157,7 +157,7 @@ var
   Stamp: string;
 begin
   CamHome := ExpandConstant('{%USERPROFILE}\.qexow-cam');
-  Stamp := GetDateTimeString('yyyymmddhhnnss', '', '');
+  Stamp := GetDateTimeString('yyyy-mm-dd-hh-nn-ss', '-', '-');
   BackupDir := CamHome + '\install-backups\' + Stamp;
 
   // Preserve durable config/secrets/boss notes. Rotate volatile runtime state.
