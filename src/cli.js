@@ -445,10 +445,11 @@ async function commandSend(args) {
   const targetAgent = opts._[0];
   const message = opts._.slice(1).join(" ");
   if (!targetAgent || !message) throw new Error("usage: cam send <agent-name> <message>");
+  const sourceAgent = opts.from || "operator";
   const payload = {
     targetAgent,
     message,
-    sourceAgent: opts.from || "operator",
+    sourceAgent,
     sourceNode: opts.sourceNode || os.hostname(),
   };
   if (opts.correlationId) payload.correlationId = opts.correlationId;
@@ -457,6 +458,11 @@ async function commandSend(args) {
   try {
     const result = await apiRequest("POST", "/send", payload);
     console.log(JSON.stringify(result.message, null, 2));
+    console.log("");
+    console.log("If you expect a response, choose your next step now:");
+    console.log("3. Preferred: keep working on other useful tasks if your environment supports returning later, then come back and check for the reply when you are alerted, resumed, or ready.");
+    console.log(`2. Fallback: wait deliberately, then check your CAM inbox with: cam inbox ${JSON.stringify(sourceAgent)} --wait 45`);
+    console.log("1. Last resort: move on immediately, report current send status to the user, and end your turn without waiting for a reply.");
     return;
   } catch (error) {
     throw error;

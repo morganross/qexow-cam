@@ -17,6 +17,9 @@ const registry = read("src/registry.js");
 const staleInstallAudit = read("scripts/assert-no-stale-installed-cam.ps1");
 const uninstallBranchIndex = cli.indexOf('if (cmd === "uninstall-service")');
 const serviceLogEventIndex = cli.indexOf('logEvent("cli.service.action"');
+const installerShipsQueryThreads =
+  installer.includes('Source: "dist\\query_threads.py"') ||
+  installer.includes('Source: "query_threads.py"');
 
 const checks = [
   ["package version is 2.1.38", pkg.version === "2.1.38"],
@@ -38,7 +41,7 @@ const checks = [
   ["native discovery treats active sessions ahead of archived copies", threadDiscovery.includes('["sessions", 2]') && threadDiscovery.includes('["archived_sessions", 1]') && threadDiscovery.includes("info.rank !== 2")],
   ["daemon discovery does not launch Python", !daemon.includes('execFile(cmd, [scriptPath]') && !daemon.includes('tryPython("python")') && daemon.includes("discoverThreads()")],
   ["GUI active classifier does not launch Python", !gui.includes('psi.FileName = "python"') && !gui.includes("FindQueryThreadsScript") && gui.includes("source=daemon-registry")],
-  ["installer does not ship query_threads.py", !installer.includes("query_threads.py")],
+  ["installer does not ship query_threads.py", !installerShipsQueryThreads],
   ["CLI can send correlation id", cli.includes("opts.correlationId") && cli.includes("payload.correlationId")],
   ["CLI can send message type", cli.includes("opts.messageType") && cli.includes("payload.messageType")],
   ["CLI uninstall-service does not log before returning", uninstallBranchIndex >= 0 && serviceLogEventIndex >= 0 && uninstallBranchIndex < serviceLogEventIndex],
@@ -61,7 +64,7 @@ const checks = [
   ["uninstaller removes all CAM local state", installer.includes("procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);") && installer.includes("FullWipeCamHomes();")],
   ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RemoveDirIfExists")],
   ["installer has no PowerShell cleanup path", !installer.includes("powershell.exe") && !installer.includes("RunPreinstallCleanupPowerShell")],
-  ["runtime and installer have no Python discovery payload", !daemon.includes("query_threads.py") && !gui.includes("query_threads.py") && !installer.includes("query_threads.py")],
+  ["runtime and installer have no Python discovery payload", !daemon.includes("query_threads.py") && !gui.includes("query_threads.py") && !installerShipsQueryThreads],
   ["postinstall stale install auditor exists", staleInstallAudit.includes("stale CAM executable remains") && staleInstallAudit.includes("stale process")],
   ["installer app version matches package", installer.includes(`AppVersion=${pkg.version}`)],
   ["GUI version matches package", gui.includes(`get { return "${pkg.version}"; }`)],

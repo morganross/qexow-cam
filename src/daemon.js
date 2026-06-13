@@ -1461,8 +1461,8 @@ export class AgentManagerDaemon {
     }
   }
 
-  async resolveRemoteRoot(peerName) {
-    const peer = getPeer(this.config, peerName);
+  async resolveRemoteRoot(peerName, peerOverride = null) {
+    const peer = peerOverride || getPeer(this.config, peerName);
     if (!peer) return null;
     if (peer.remoteRoot && peer.remoteRoot !== "auto") return peer.remoteRoot;
     if (peer.remoteSync?.remoteRoot) return peer.remoteSync.remoteRoot;
@@ -1499,10 +1499,7 @@ export class AgentManagerDaemon {
 
   async #syncKnownPeers() {
     const peers = listPeers(this.config).filter((peer) => peer?.transport === "ssh" && String(peer?.ssh || "").includes("@") && peer?.key);
-    const results = [];
-    for (const peer of peers) {
-      results.push(await this.#syncSinglePeer(peer));
-    }
+    const results = await Promise.all(peers.map((peer) => this.#syncSinglePeer(peer)));
     return {
       ok: results.every((row) => row.ok !== false),
       peers: results,
@@ -1511,14 +1508,33 @@ export class AgentManagerDaemon {
 
   async #syncSinglePeer(peer) {
     const peerName = peer.name;
-    const remoteRoot = await this.resolveRemoteRoot(peerName);
+    const remoteRoot = await this.resolveRemoteRoot(peerName, peer);
     if (!remoteRoot) {
       const error = "unable to locate remote CAM manager root";
+      upsertPeer(this.config, peerName, {
+        ...getPeer(this.config, peerName),
+        remoteSync: {
+          ...(getPeer(this.config, peerName)?.remoteSync || {}),
+          lastAttemptAt: new Date().toISOString(),
+          lastStatus: "failed",
+          lastError: error,
+        },
+      });
       this.log("peer.sync.failed", { peerName, error });
       return { ok: false, peerName, error };
     }
     const remoteInventoryResult = await this.#fetchRemoteCamInventory(peer, remoteRoot);
     if (!remoteInventoryResult.ok) {
+      upsertPeer(this.config, peerName, {
+        ...getPeer(this.config, peerName),
+        remoteSync: {
+          ...(getPeer(this.config, peerName)?.remoteSync || {}),
+          lastAttemptAt: new Date().toISOString(),
+          remoteRoot: remoteRoot || null,
+          lastStatus: "failed",
+          lastError: remoteInventoryResult.error,
+        },
+      });
       this.log("peer.sync.failed", { peerName, error: remoteInventoryResult.error });
       return { ok: false, peerName, error: remoteInventoryResult.error };
     }
@@ -1527,6 +1543,10 @@ export class AgentManagerDaemon {
     upsertPeer(this.config, peerName, {
       ...getPeer(this.config, peerName),
       remoteSync: {
+        ...(getPeer(this.config, peerName)?.remoteSync || {}),
+        lastAttemptAt: new Date().toISOString(),
+        lastStatus: "ok",
+        lastError: null,
         syncedAt: new Date().toISOString(),
         remoteRoot: remoteRoot || null,
         remoteInventorySource: remoteInventoryResult.source,
@@ -1672,13 +1692,36 @@ export class AgentManagerDaemon {
       reason: "remote cam lacks inventory export command",
     });
 
+    const registryResult = await this.#sshRunRemoteRegistryExport(peer, remoteRoot);
+    if (registryResult.ok) {
+      try {
+        const parsed = JSON.parse(registryResult.text);
+        return {
+          ok: true,
+          source: "remote ~/.qexow-cam/agents.json",
+          inventory: {
+            version: 1,
+            nodeName: parsed?.nodeName || peer.name,
+            exportedAt: new Date().toISOString(),
+            agents: parsed?.agents || {},
+            peers: parsed?.peers || {},
+          },
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: `invalid remote CAM registry JSON: ${error.message}`,
+        };
+      }
+    }
+
     const statusResult = await this.#sshRunCamDaemonStatus(peer, remoteRoot);
     if (!statusResult.ok) {
-      return { ok: false, error: statusResult.error };
+      return { ok: false, error: `inventory export unsupported; remote registry unavailable; daemon status failed: ${statusResult.error}` };
     }
     const agentListResult = await this.#sshRunCamAgentList(peer, remoteRoot);
     if (!agentListResult.ok) {
-      return { ok: false, error: agentListResult.error };
+      return { ok: false, error: `inventory export unsupported; agent list failed: ${agentListResult.error}` };
     }
 
     let daemonStatus;
@@ -1702,6 +1745,24 @@ export class AgentManagerDaemon {
         peers: {},
       },
     };
+  }
+
+  async #sshRunRemoteRegistryExport(peer, remoteRoot) {
+    const root = remoteRoot || this.#remoteManagerRoot(peer);
+    const command = [
+      `cd ${sq(root)}`,
+      "&&",
+      "if [ -f ~/.qexow-cam/agents.json ]; then cat ~/.qexow-cam/agents.json; else echo __CAM_REGISTRY_MISSING__; exit 44; fi",
+    ].join(" ");
+    this.log("peer.remote_registry.command", {
+      peerName: peer.name,
+      command,
+    });
+    const result = await this.#probeRemoteCommand(peer, command, 20000);
+    if (result.ok && /__CAM_REGISTRY_MISSING__/.test(result.text || "")) {
+      return { ok: false, error: "remote registry file missing" };
+    }
+    return result;
   }
 
   async #sshRunCamDaemonStatus(peer, remoteRoot) {
@@ -2216,57 +2277,132 @@ export class AgentManagerDaemon {
       return;
     }
 
-    for (const peer of Object.values(registry.peers || {})) {
-      if (!peer || peer.key) continue;
-      const doc = peer.docDiscovery;
-      if (!doc?.candidateIps?.length) continue;
-      const usernames = this.#candidateUsernames(peer);
-      if (!usernames.length) continue;
-      for (const ip of doc.candidateIps) {
-        for (const username of usernames) {
-          const cacheKey = `${peer.name}|${username}@${ip}|${keyPool.map((row) => row.key).join(",")}`;
-          const lastTried = this.peerProbeAttempts.get(cacheKey);
-          if (lastTried && Date.now() - lastTried < 10 * 60 * 1000) continue;
-          this.peerProbeAttempts.set(cacheKey, Date.now());
-          const verified = await this.#tryRegistryKeysAgainstTarget(keyPool, username, ip);
-          if (!verified) continue;
-          const updated = upsertPeer(this.config, peer.name, {
-            ...peer,
-            transport: "ssh",
-            ssh: `${username}@${ip}`,
-            key: verified.key,
-            docProbe: {
-              verifiedAt: new Date().toISOString(),
-              username,
-              ip,
-              recoveredFromRegistryKeyOwner: verified.owner,
-            },
-          });
-          this.log("peer.discovery.probe.verified", {
-            peerName: peer.name,
-            ssh: `${username}@${ip}`,
-            keyOwner: verified.owner,
-          });
-          appendEvent("peer.discovery.probe.verified", {
-            peerName: peer.name,
-            ssh: `${username}@${ip}`,
-            keyOwner: verified.owner,
-          });
-          try {
-            await this.#syncSinglePeer(updated);
-          } catch (error) {
-            this.log("peer.discovery.probe.sync_failed", {
-              peerName: peer.name,
-              ssh: `${username}@${ip}`,
-              error: error.message,
-            });
-          }
-          break;
+    const peers = Object.values(registry.peers || {}).filter(Boolean);
+    await Promise.all(peers.map((peer) => this.#probeSingleDocDiscoveredPeer(peer, keyPool)));
+  }
+
+  async #probeSingleDocDiscoveredPeer(peer, keyPool) {
+    if (!peer || peer.key) return;
+    const doc = peer.docDiscovery;
+    if (!doc?.candidateIps?.length) return;
+    const usernames = this.#candidateUsernames(peer);
+    if (!usernames.length) return;
+    let lastFailure = null;
+    for (const ip of doc.candidateIps) {
+      for (const username of usernames) {
+        const cacheKey = `${peer.name}|${username}@${ip}|${keyPool.map((row) => row.key).join(",")}`;
+        const lastTried = this.peerProbeAttempts.get(cacheKey);
+        if (lastTried && Date.now() - lastTried < 10 * 60 * 1000) continue;
+        this.peerProbeAttempts.set(cacheKey, Date.now());
+        const verified = await this.#tryRegistryKeysAgainstTarget(keyPool, username, ip);
+        if (!verified) {
+          lastFailure = `no SSH key matched ${username}@${ip}`;
+          continue;
         }
-        const refreshed = getPeer(this.config, peer.name);
-        if (refreshed?.key) break;
+        const updated = upsertPeer(this.config, peer.name, {
+          ...peer,
+          transport: "ssh",
+          ssh: `${username}@${ip}`,
+          key: verified.key,
+          docProbe: {
+            verifiedAt: new Date().toISOString(),
+            username,
+            ip,
+            recoveredFromRegistryKeyOwner: verified.owner,
+            lastFailure: null,
+          },
+        });
+        this.log("peer.discovery.probe.verified", {
+          peerName: peer.name,
+          ssh: `${username}@${ip}`,
+          keyOwner: verified.owner,
+        });
+        appendEvent("peer.discovery.probe.verified", {
+          peerName: peer.name,
+          ssh: `${username}@${ip}`,
+          keyOwner: verified.owner,
+        });
+        try {
+          await this.#syncSinglePeer(updated);
+        } catch (error) {
+          this.log("peer.discovery.probe.sync_failed", {
+            peerName: peer.name,
+            ssh: `${username}@${ip}`,
+            error: error.message,
+          });
+        }
+        break;
+      }
+      const refreshed = getPeer(this.config, peer.name);
+      if (refreshed?.key) break;
+    }
+    let refreshed = getPeer(this.config, peer.name);
+    if (!refreshed?.key && Array.isArray(doc?.candidateSshTargets) && doc.candidateSshTargets.length) {
+      const direct = await this.#tryDocSshTargetsAndSync(peer, keyPool, doc.candidateSshTargets);
+      if (direct.ok) {
+        refreshed = getPeer(this.config, peer.name);
+      } else if (direct.error) {
+        lastFailure = direct.error;
       }
     }
+    if (!refreshed?.key && lastFailure) {
+      upsertPeer(this.config, peer.name, {
+        ...refreshed,
+        docProbe: {
+          ...(refreshed?.docProbe || {}),
+          lastFailure,
+          attemptedAt: new Date().toISOString(),
+        },
+      });
+      this.log("peer.discovery.probe.failed", {
+        peerName: peer.name,
+        error: lastFailure,
+      });
+    }
+  }
+
+  async #tryDocSshTargetsAndSync(peer, keyPool, candidateTargets) {
+    for (const target of candidateTargets || []) {
+      const normalizedTarget = String(target || "").trim();
+      if (!normalizedTarget.includes("@")) continue;
+      const [username, ip] = normalizedTarget.split("@");
+      for (const candidate of keyPool) {
+        const candidatePeer = {
+          ...peer,
+          transport: "ssh",
+          ssh: normalizedTarget,
+          key: candidate.key,
+        };
+        const result = await this.#syncSinglePeer(candidatePeer);
+        if (!result?.ok) continue;
+        upsertPeer(this.config, peer.name, {
+          ...getPeer(this.config, peer.name),
+          transport: "ssh",
+          ssh: normalizedTarget,
+          key: candidate.key,
+          docProbe: {
+            ...(getPeer(this.config, peer.name)?.docProbe || {}),
+            verifiedAt: new Date().toISOString(),
+            username,
+            ip,
+            recoveredFromRegistryKeyOwner: candidate.owner,
+            lastFailure: null,
+            directDocTarget: true,
+          },
+        });
+        this.log("peer.discovery.doc_target.verified", {
+          peerName: peer.name,
+          ssh: normalizedTarget,
+          keyOwner: candidate.owner,
+        });
+        return { ok: true, ssh: normalizedTarget, key: candidate.key };
+      }
+    }
+    const firstTarget = (candidateTargets || []).find((row) => String(row || "").includes("@"));
+    return {
+      ok: false,
+      error: firstTarget ? `direct doc SSH target failed for ${firstTarget}` : "no direct doc SSH target available",
+    };
   }
 
   #registryKeyPool(registry) {
@@ -2306,6 +2442,9 @@ export class AgentManagerDaemon {
     if (ssh.includes("@")) usernames.push(ssh.split("@")[0]);
     for (const target of peer?.docDiscovery?.candidateSshTargets || []) {
       if (String(target).includes("@")) usernames.push(String(target).split("@")[0]);
+    }
+    for (const username of peer?.docDiscovery?.candidateUsernames || []) {
+      usernames.push(String(username));
     }
     return [...new Set(usernames.filter(Boolean))];
   }
@@ -2375,6 +2514,7 @@ export class AgentManagerDaemon {
       codexManaged: peers.filter((peer) => peer.transport === "codex-managed").length,
       docMatched: peers.filter((peer) => peer.docFilesCount > 0).length,
       probeReady: peers.filter((peer) => peer.state === "probe-ready").length,
+      probeFailed: peers.filter((peer) => peer.state === "probe-failed").length,
       missingIp: peers.filter((peer) => peer.state === "missing-ip").length,
       missingKey: peers.filter((peer) => peer.state === "missing-key").length,
       missingUsername: peers.filter((peer) => peer.state === "missing-username").length,
@@ -2401,11 +2541,15 @@ export class AgentManagerDaemon {
     const hasAnyKey = keyPool.length > 0;
     const mirroredAgents = Array.isArray(remoteSync.mirroredAgents) ? remoteSync.mirroredAgents.length : 0;
     const verifiedSsh = peer?.transport === "ssh" && ssh.includes("@") && !!peer?.key;
+    const lastProbeFailure = String(peer?.docProbe?.lastFailure || "").trim();
     const blockers = [];
     let state = "codex-alias-only";
 
     if (remoteSync?.syncedAt && mirroredAgents > 0) {
       state = "mirrored";
+    } else if (remoteSync?.lastStatus === "failed") {
+      state = "sync-failed";
+      blockers.push(remoteSync?.lastError || "Remote CAM sync failed.");
     } else if (remoteSync?.syncedAt && mirroredAgents === 0 && verifiedSsh) {
       state = "verified";
     } else if (verifiedSsh) {
@@ -2422,6 +2566,9 @@ export class AgentManagerDaemon {
     } else if (!hasAnyKey) {
       state = "missing-key";
       blockers.push("No local SSH key path was discovered or registered.");
+    } else if (lastProbeFailure) {
+      state = "probe-failed";
+      blockers.push(lastProbeFailure);
     } else {
       state = "probe-ready";
     }
@@ -2451,6 +2598,9 @@ export class AgentManagerDaemon {
       candidateHostnames: doc.candidateHostnames || [],
       candidateUsernames,
       mirroredAgents,
+      remoteSyncStatus: remoteSync?.lastStatus || "",
+      remoteSyncError: remoteSync?.lastError || "",
+      lastProbeFailure: lastProbeFailure || "",
       remoteRoot: remoteSync?.remoteRoot || peer?.remoteRoot || "",
       remoteNodeName: remoteSync?.remoteNodeName || "",
       syncedAt: remoteSync?.syncedAt || "",

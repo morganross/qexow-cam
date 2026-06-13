@@ -5,6 +5,7 @@ import path from "node:path";
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
 const SSH_AT_IP_RE = /\b([a-z_][a-z0-9_-]*)@((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))\b/ig;
 const KEY_PATH_RE = /(?:[A-Za-z]:\\[^`"'|\r\n]+?\.(?:pem|ppk|key)|\/[A-Za-z0-9._/\-]+?\.(?:pem|ppk|key))/g;
+const USER_LINE_RE = /(?:^|\b)(?:OS user|User)\s*:\s*`?([a-z_][a-z0-9_-]*)`?/i;
 const CODE_FENCE_RE = /^```/;
 const SKIP_DIR_RE = /^(?:node_modules|dist|build|coverage|vendor|tmp|temp|out|release|releases)$/i;
 const PEER_NAME_ALIASES = new Map([
@@ -100,6 +101,7 @@ function scanSection(sectionName, lines, file) {
   const ips = [];
   const privateIps = [];
   const sshTargets = [];
+  const usernames = [];
   const hostnames = [];
   const sourceLines = [];
   let inFence = false;
@@ -124,14 +126,17 @@ function scanSection(sectionName, lines, file) {
     const sshMatch = [...line.matchAll(SSH_AT_IP_RE)];
     for (const match of sshMatch) {
       sshTargets.push(`${match[1]}@${match[2]}`);
+      usernames.push(match[1]);
       ips.push(match[2]);
       sourceLines.push(line.trim());
     }
+    const userMatch = line.match(USER_LINE_RE);
+    if (userMatch?.[1]) usernames.push(userMatch[1].trim());
     const hostMatch = line.match(/Hostname:\s*`?([^`\r\n]+)`?/i);
     if (hostMatch?.[1]) hostnames.push(hostMatch[1].trim());
   }
 
-  if (!ips.length && !sshTargets.length && !hostnames.length) return null;
+  if (!ips.length && !sshTargets.length && !hostnames.length && !usernames.length) return null;
   return {
     peerName: normalized,
     file,
@@ -139,6 +144,7 @@ function scanSection(sectionName, lines, file) {
     ips: unique(ips),
     privateIps: unique(privateIps),
     sshTargets: unique(sshTargets),
+    usernames: unique(usernames),
     hostnames: unique(hostnames),
     sourceLines: unique(sourceLines).slice(0, 20),
   };
@@ -244,6 +250,7 @@ export function discoverPeerFactsFromMarkdown({ codexHome }) {
       candidateIps: [],
       candidatePrivateIps: [],
       candidateSshTargets: [],
+      candidateUsernames: [],
       candidateHostnames: [],
       sourceLines: [],
     };
@@ -252,6 +259,7 @@ export function discoverPeerFactsFromMarkdown({ codexHome }) {
     existing.candidateIps.push(...row.ips);
     existing.candidatePrivateIps.push(...row.privateIps);
     existing.candidateSshTargets.push(...row.sshTargets);
+    existing.candidateUsernames.push(...row.usernames);
     existing.candidateHostnames.push(...row.hostnames);
     existing.sourceLines.push(...row.sourceLines);
     byPeer.set(row.peerName, existing);
@@ -263,6 +271,7 @@ export function discoverPeerFactsFromMarkdown({ codexHome }) {
     candidateIps: unique(row.candidateIps),
     candidatePrivateIps: unique(row.candidatePrivateIps),
     candidateSshTargets: unique(row.candidateSshTargets),
+    candidateUsernames: unique(row.candidateUsernames),
     candidateHostnames: unique(row.candidateHostnames),
     sourceLines: unique(row.sourceLines).slice(0, 20),
   }));
