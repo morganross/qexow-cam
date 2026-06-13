@@ -10,6 +10,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
+using System.Net.Sockets;
 
 [assembly: AssemblyVersion("2.1.32.0")]
 [assembly: AssemblyFileVersion("2.1.32.0")]
@@ -137,6 +138,7 @@ namespace QexowCamGui
         private readonly object daemonStartLock = new object();
         private bool daemonStartAttempted = false;
         private bool daemonStartInProgress = false;
+        private bool daemonRecoveryAttempted = false;
 
         public MainForm(Action<string> logger)
         {
@@ -257,7 +259,6 @@ namespace QexowCamGui
             outputBox.Font = new Font("Consolas", 9.0f);
             root.Controls.Add(outputBox, 0, 5);
 
-            Load += delegate { RefreshAll(); };
         }
 
         public void RefreshAll()
@@ -266,6 +267,7 @@ namespace QexowCamGui
             outputBox.Text = AppendLine(outputBox.Text, "Refreshing CAM status...");
             ThreadPool.QueueUserWorkItem(delegate
             {
+                bool healthOk = false;
                 try
                 {
                     Dictionary<string, object> health = ApiGet("/health");
@@ -278,6 +280,7 @@ namespace QexowCamGui
                         daemonLabel.Text = "Daemon online - version=" + version + " node=" + nodeName + " started=" + startedAt;
                     });
                     log("health-ok");
+                    healthOk = true;
                 }
                 catch (Exception ex)
                 {
@@ -296,6 +299,7 @@ namespace QexowCamGui
                                 daemonLabel.Text = "Daemon online - version=" + retryVersion + " node=" + retryNodeName + " started=" + retryStartedAt;
                             });
                             log("health-ok-after-daemon-start");
+                            healthOk = true;
                             goto LoadAgentList;
                         }
                         catch (Exception retryEx)
@@ -331,6 +335,16 @@ namespace QexowCamGui
                 }
                 catch (Exception ex)
                 {
+                    if (healthOk && IsUnauthorized(ex) && RecoverFromForeignDaemon())
+                    {
+                        InvokeUi(delegate
+                        {
+                            outputBox.Text = AppendLine(outputBox.Text, "Detected a stale/foreign daemon on the CAM port. Replacing it with the installed daemon and retrying...");
+                        });
+                        log("daemon-recovery-retrying-after-unauthorized");
+                        RefreshAll();
+                        return;
+                    }
                     InvokeUi(delegate { outputBox.Text = AppendLine(outputBox.Text, "Agent load error: " + ex.Message); });
                     log("agents-error " + ex.Message);
                 }
@@ -1077,6 +1091,170 @@ namespace QexowCamGui
                     daemonStartInProgress = false;
                 }
             }
+        }
+
+        private bool RecoverFromForeignDaemon()
+        {
+            lock (daemonStartLock)
+            {
+                if (daemonRecoveryAttempted || daemonStartInProgress)
+                {
+                    log("daemon-recovery-skipped reason=already-attempted");
+                    return false;
+                }
+                daemonRecoveryAttempted = true;
+                daemonStartAttempted = false;
+            }
+
+            try
+            {
+                ShutdownExistingDaemon();
+                Thread.Sleep(1200);
+                return TryStartDaemon();
+            }
+            catch (Exception ex)
+            {
+                log("daemon-recovery-error " + ex.Message);
+                return false;
+            }
+        }
+
+        private void ShutdownExistingDaemon()
+        {
+            int port = CamPaths.Port;
+            int currentPid = Process.GetCurrentProcess().Id;
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/shutdown");
+                request.Method = "POST";
+                request.Timeout = 2000;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                }
+                log("daemon-recovery-shutdown-sent port=" + port);
+            }
+            catch (Exception ex)
+            {
+                log("daemon-recovery-shutdown-ignored port=" + port + " error=" + ex.Message);
+            }
+
+            if (!WaitForPortRelease(port, 3000))
+            {
+                KillPortOccupant(port, currentPid);
+                WaitForPortRelease(port, 3000);
+            }
+        }
+
+        private bool WaitForPortRelease(int port, int timeoutMs)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            while (stopwatch.ElapsedMilliseconds < timeoutMs)
+            {
+                if (!IsPortInUse(port))
+                {
+                    log("daemon-recovery-port-free port=" + port);
+                    return true;
+                }
+                Thread.Sleep(150);
+            }
+            log("daemon-recovery-port-still-busy port=" + port);
+            return false;
+        }
+
+        private bool IsPortInUse(int port)
+        {
+            TcpClient client = new TcpClient();
+            try
+            {
+                IAsyncResult result = client.BeginConnect("127.0.0.1", port, null, null);
+                bool ok = result.AsyncWaitHandle.WaitOne(250);
+                if (!ok) return false;
+                client.EndConnect(result);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                try { client.Close(); } catch { }
+            }
+        }
+
+        private void KillPortOccupant(int port, int currentPid)
+        {
+            try
+            {
+                int? pid = FindOwningPidByNetstat(port, currentPid);
+                if (!pid.HasValue)
+                {
+                    log("daemon-recovery-port-owner-missing port=" + port);
+                    return;
+                }
+                Process process = Process.GetProcessById(pid.Value);
+                log("daemon-recovery-kill pid=" + pid.Value + " name=" + process.ProcessName);
+                process.Kill();
+                process.WaitForExit(4000);
+            }
+            catch (Exception ex)
+            {
+                log("daemon-recovery-kill-failed port=" + port + " error=" + ex.Message);
+            }
+        }
+
+        private int? FindOwningPidByNetstat(int port, int currentPid)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = "netstat.exe";
+                psi.Arguments = "-ano -p tcp";
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                using (Process process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit(3000);
+                    string[] lines = output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                    string token = "127.0.0.1:" + port;
+                    foreach (string line in lines)
+                    {
+                        string trimmed = line.Trim();
+                        if (!trimmed.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
+                        string[] parts = trimmed.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 5) continue;
+                        string localAddress = parts[1];
+                        string state = parts[3];
+                        string pidText = parts[4];
+                        if (!String.Equals(localAddress, token, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!String.Equals(state, "LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
+                        int pid;
+                        if (!Int32.TryParse(pidText, out pid)) continue;
+                        if (pid == currentPid) continue;
+                        return pid;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log("daemon-recovery-netstat-failed port=" + port + " error=" + ex.Message);
+            }
+            return null;
+        }
+
+        private bool IsUnauthorized(Exception ex)
+        {
+            WebException web = ex as WebException;
+            if (web == null) return ex.Message.IndexOf("401", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                ex.Message.IndexOf("Unauthorized", StringComparison.OrdinalIgnoreCase) >= 0;
+            HttpWebResponse response = web.Response as HttpWebResponse;
+            if (response != null && response.StatusCode == HttpStatusCode.Unauthorized) return true;
+            return ex.Message.IndexOf("401", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                ex.Message.IndexOf("Unauthorized", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string AppendLine(string existing, string line)
