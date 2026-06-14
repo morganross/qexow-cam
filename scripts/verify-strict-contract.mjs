@@ -24,10 +24,10 @@ const installerShipsQueryThreads =
   installer.includes('Source: "query_threads.py"');
 
 const checks = [
-  ["package version is 2.1.45", pkg.version === "2.1.45"],
+  ["package version is 2.1.46", pkg.version === "2.1.46"],
   ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
   ["config does not hard-fail when Windows Codex is missing", config.includes('return "codex";') && !config.includes("Codex execution path not configured")],
-  ["daemon exposes CAM_VERSION 2.1.45", daemon.includes('const CAM_VERSION = "2.1.45";')],
+  ["daemon exposes CAM_VERSION 2.1.46", daemon.includes('const CAM_VERSION = "2.1.46";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["app-server spawn errors are handled", appServer.includes('this.child.on("error"') && appServer.includes("app-server.spawn.error") && appServer.includes("pending.reject(error)")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
@@ -78,7 +78,7 @@ const checks = [
   ["uninstaller force-kills known CAM processes", installer.includes("procedure KillKnownCamProcesses();") && installer.includes("KillKnownCamProcesses();")],
   ["installer has one custom postinstall startup path", installer.includes("procedure LaunchInstalledCamIfNeeded();") && installer.includes("if CurStep = ssPostInstall then begin") && installer.includes("LaunchInstalledCamIfNeeded();") && !installer.includes("[Run]")],
   ["CLI can launch daemon and wait for health", cli.includes('if (action === "launch")') && cli.includes("daemon launch did not become healthy") && cli.includes("child.unref()")],
-  ["headless installer starts daemon without GUI", installer.includes("daemon launch --headless --wait-seconds 30") && installer.includes("if IsHeadlessInstall() then begin") && installer.includes("qexow-cam-gui.exe")],
+  ["headless installer starts daemon without GUI", installer.includes("daemon start --headless") && installer.includes("ewNoWait") && installer.includes("if IsHeadlessInstall() then begin") && installer.includes("qexow-cam-gui.exe")],
   ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RemoveDirIfExists")],
   ["installer has no PowerShell cleanup path", !installer.includes("powershell.exe") && !installer.includes("RunPreinstallCleanupPowerShell")],
   ["runtime and installer have no Python discovery payload", !daemon.includes("query_threads.py") && !gui.includes("query_threads.py") && !installerShipsQueryThreads],
