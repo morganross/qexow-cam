@@ -12,9 +12,9 @@ using System.Windows.Forms;
 using System.Reflection;
 using System.Net.Sockets;
 
-[assembly: AssemblyVersion("2.1.46.0")]
-[assembly: AssemblyFileVersion("2.1.46.0")]
-[assembly: AssemblyInformationalVersion("2.1.46")]
+[assembly: AssemblyVersion("2.1.47.0")]
+[assembly: AssemblyFileVersion("2.1.47.0")]
+[assembly: AssemblyInformationalVersion("2.1.47")]
 
 namespace QexowCamGui
 {
@@ -1368,7 +1368,7 @@ namespace QexowCamGui
 
         public static string Version
         {
-            get { return "2.1.46"; }
+            get { return "2.1.47"; }
         }
     }
 }

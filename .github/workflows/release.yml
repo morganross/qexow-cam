@@ -94,6 +94,35 @@ jobs:
           if (-not $ExpectGui -and $guiProcesses.Count -ne 0) { throw "Headless install unexpectedly launched qexow-cam-gui.exe" }
         }
 
+        function Invoke-SetupProcess {
+          param(
+            [string]$FilePath,
+            [string[]]$ArgumentList,
+            [string]$LogPath,
+            [string]$Label,
+            [int]$TimeoutSeconds = 90
+          )
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $FilePath
+          foreach ($arg in $ArgumentList) { [void]$psi.ArgumentList.Add($arg) }
+          $psi.UseShellExecute = $false
+          $process = [System.Diagnostics.Process]::Start($psi)
+          if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Write-Host "$Label timed out after $TimeoutSeconds seconds."
+            Get-CimInstance Win32_Process |
+              Where-Object { $_.Name -in @("QexowCamSetup.exe","unins000.exe","cam.exe","qexow-cam-gui.exe","node.exe") -or $_.ExecutablePath -like "C:\Program Files\Qexow CAM\*" } |
+              Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine |
+              Format-List | Out-String -Width 500 | Write-Host
+            Get-Content $LogPath -ErrorAction SilentlyContinue
+            try { $process.Kill($true) } catch {}
+            throw "$Label timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            Get-Content $LogPath -ErrorAction SilentlyContinue
+            throw "$Label failed with exit code $($process.ExitCode)"
+          }
+        }
+
         New-Item -ItemType Directory -Force -Path $staleQexow,$staleCodex | Out-Null
         Set-Content -Path (Join-Path $staleQexow "cam.exe") -Value "stale fake cam"
         Set-Content -Path (Join-Path $staleQexow "tray_windows_release.exe") -Value "stale fake tray"
@@ -105,11 +134,7 @@ jobs:
         Set-Content -Path (Join-Path $camHome "config.json") -Value '{"stale_config":true}'
         Set-Content -Path (Join-Path $legacyCamHome "agents.json") -Value '{"legacy_stale":true}'
         if (Test-Path $log) { Remove-Item $log -Force }
-        $p = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log" -PassThru -Wait
-        if ($p.ExitCode -ne 0) {
-          Get-Content $log -ErrorAction SilentlyContinue
-          throw "Installer smoke failed with exit code $($p.ExitCode)"
-        }
+        Invoke-SetupProcess -FilePath $installer -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log") -LogPath $log -Label "Installer smoke"
         $text = Get-Content $log -Raw
         if ($text -notmatch "Installation process succeeded") {
           Get-Content $log
@@ -127,11 +152,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path $camHome | Out-Null
         Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"preserve_on_reinstall":true}'
         Set-Content -Path (Join-Path $camHome "mailbox.jsonl") -Value '{"preserve_on_reinstall":true}'
-        $p2 = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log","/TASKS=`"preserve_state`"" -PassThru -Wait
-        if ($p2.ExitCode -ne 0) {
-          Get-Content $log -ErrorAction SilentlyContinue
-          throw "Installer preserve-state smoke failed with exit code $($p2.ExitCode)"
-        }
+        Invoke-SetupProcess -FilePath $installer -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log","/TASKS=`"preserve_state`"") -LogPath $log -Label "Installer preserve-state smoke"
         $health = Wait-CamHealth -ExpectedVersion $expectedVersion
         Assert-CamProcessState -ExpectGui $false
         if (-not (Test-Path (Join-Path $camHome "agents.json"))) { throw "Preserve-state reinstall unexpectedly removed agents.json" }
@@ -140,8 +161,7 @@ jobs:
         if (-not (Test-Path $uninstaller)) { throw "Uninstaller missing" }
         New-Item -ItemType Directory -Force -Path $camHome | Out-Null
         Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"uninstall_should_delete":true}'
-        $u = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -PassThru -Wait
-        if ($u.ExitCode -ne 0) { throw "Uninstaller smoke failed with exit code $($u.ExitCode)" }
+        Invoke-SetupProcess -FilePath $uninstaller -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART") -LogPath $log -Label "Uninstaller smoke"
         if (Test-Path $camHome) { throw "Uninstall did not remove CAM home $camHome" }
 
     - name: Delete standalone executable payloads
