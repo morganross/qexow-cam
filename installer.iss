@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.41
+AppVersion=2.1.42
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -415,6 +415,16 @@ begin
   Result := WizardIsTaskSelected('preserve_state');
 end;
 
+procedure KillKnownCamProcesses();
+begin
+  KillProcess('qexow-tray-proof.exe');
+  KillProcess('qexow-cam-gui.exe');
+  KillProcess('cam.exe');
+  KillProcess('cam-core.exe');
+  KillProcess('cam-tray.exe');
+  KillProcess('tray_windows_release.exe');
+end;
+
 function IsHeadlessInstall(): Boolean;
 var
   i: Integer;
@@ -431,32 +441,43 @@ end;
 function InitializeSetup(): Boolean;
 begin
   // Stop every known CAM executable name before files are replaced.
-  KillProcess('qexow-tray-proof.exe');
-  KillProcess('qexow-cam-gui.exe');
-  KillProcess('cam.exe');
-  KillProcess('cam-core.exe');
-  KillProcess('cam-tray.exe');
-  KillProcess('tray_windows_release.exe');
+  KillKnownCamProcesses();
 
   Result := True;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+procedure LaunchInstalledCamIfNeeded();
+var
+  ResultCode: Integer;
 begin
-  if CurStep <> ssInstall then begin
+  if IsHeadlessInstall() then begin
     exit;
   end;
 
-  RemoveLegacyCamLaunchPoints();
-  RemoveKnownInstallRoots();
+  Exec(ExpandConstant('{app}\cam.exe'), 'install-service', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{app}\qexow-cam-gui.exe'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
 
-  if ShouldPreservePriorState() then begin
-    ResetCamProcessMarkersOnly();
-  end else begin
-    FullWipeCamHomes();
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then begin
+    RemoveLegacyCamLaunchPoints();
+    RemoveKnownInstallRoots();
+
+    if ShouldPreservePriorState() then begin
+      ResetCamProcessMarkersOnly();
+    end else begin
+      FullWipeCamHomes();
+    end;
+
+    PersistCleanupOverrides();
+    exit;
   end;
-
-  PersistCleanupOverrides();
+  if CurStep = ssPostInstall then begin
+    if WizardSilent then begin
+      LaunchInstalledCamIfNeeded();
+    end;
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -465,6 +486,7 @@ begin
     exit;
   end;
 
+  KillKnownCamProcesses();
   RemoveLegacyCamLaunchPoints();
   FullWipeCamHomes();
 end;

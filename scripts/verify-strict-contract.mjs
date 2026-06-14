@@ -23,9 +23,9 @@ const installerShipsQueryThreads =
   installer.includes('Source: "query_threads.py"');
 
 const checks = [
-  ["package version is 2.1.41", pkg.version === "2.1.41"],
+  ["package version is 2.1.42", pkg.version === "2.1.42"],
   ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
-  ["daemon exposes CAM_VERSION 2.1.41", daemon.includes('const CAM_VERSION = "2.1.41";')],
+  ["daemon exposes CAM_VERSION 2.1.42", daemon.includes('const CAM_VERSION = "2.1.42";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
   ["daemon strict send does not queue unresolved targets", daemon.includes("strict send cannot deliver") && daemon.includes("message.failed.strict")],
@@ -72,6 +72,8 @@ const checks = [
   ["installer deletes runtime map on reinstall", installer.includes("ResetCamRuntimeStateForInstall") && installer.includes("DeleteIfExists(CamHome + '\\agents.json')")],
   ["installer uses valid USERPROFILE env constant", installer.includes("ExpandConstant('{%USERPROFILE}\\.qexow-cam')") && !installer.includes("{userprofile}")],
   ["uninstaller removes all CAM local state", installer.includes("procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);") && installer.includes("FullWipeCamHomes();")],
+  ["uninstaller force-kills known CAM processes", installer.includes("procedure KillKnownCamProcesses();") && installer.includes("KillKnownCamProcesses();")],
+  ["silent installer explicitly launches installed CAM", installer.includes("procedure LaunchInstalledCamIfNeeded();") && installer.includes("if WizardSilent then begin") && installer.includes("LaunchInstalledCamIfNeeded();")],
   ["installer removes old per-user Qexow CAM install", installer.includes("{localappdata}\\Programs\\Qexow CAM") && installer.includes("RemoveDirIfExists")],
   ["installer has no PowerShell cleanup path", !installer.includes("powershell.exe") && !installer.includes("RunPreinstallCleanupPowerShell")],
   ["runtime and installer have no Python discovery payload", !daemon.includes("query_threads.py") && !gui.includes("query_threads.py") && !installerShipsQueryThreads],
