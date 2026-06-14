@@ -40,6 +40,7 @@ import { classifyThreadDiscovery, discoveryCounts } from "./discovery-policy.js"
 import { paths, writeJsonAtomic, readJson } from "./paths.js";
 import { logEvent, enforceRetention } from "./logger.js";
 import { bootstrapAntigravity } from "./antigravity.js";
+import { refreshLocalRegistryFromThreads } from "./discovery-refresh.js";
 import {
   buildNodeDiscoveryPrompt,
   NODE_DISCOVERY_MARKER,
@@ -860,7 +861,13 @@ export class AgentManagerDaemon {
       this.#refreshDocPeerFacts();
       void this.#probeDocDiscoveredPeers();
       const threads = discoverThreads();
-      this.#applyThreadSync(threads);
+      refreshLocalRegistryFromThreads({
+        config: this.config,
+        threads,
+        threadToAgent: this.threadToAgent,
+        skippedThreadReasons: this.skippedThreadReasons,
+        log: (type, payload) => this.log(type, payload),
+      });
       this.log("sync.threads.complete", { count: threads.length, source: "native-thread-discovery" });
     } catch (error) {
       this.log("sync.threads.failed", { error: error.message, source: "native-thread-discovery" });
@@ -1617,6 +1624,7 @@ export class AgentManagerDaemon {
 
   async #syncSinglePeer(peer) {
     const peerName = peer.name;
+    const previousRemoteSync = getPeer(this.config, peerName)?.remoteSync || {};
     if (this.#isSelfPeer(peer)) {
       this.#pruneMirroredAgentsForPeer(peerName, []);
       upsertPeer(this.config, peerName, {
@@ -1671,7 +1679,7 @@ export class AgentManagerDaemon {
       return { ok: false, peerName, error: remoteInventoryResult.error };
     }
     const remoteInventory = remoteInventoryResult.inventory;
-    const result = this.#ingestRemotePeerRegistry(peer, remoteInventory, remoteRoot);
+    const result = this.#ingestRemotePeerRegistry(peer, remoteInventory, remoteRoot, previousRemoteSync);
     upsertPeer(this.config, peerName, {
       ...getPeer(this.config, peerName),
       remoteSync: {
@@ -1683,7 +1691,7 @@ export class AgentManagerDaemon {
         remoteRoot: remoteRoot || null,
         remoteInventorySource: remoteInventoryResult.source,
         remoteInventorySchema: remoteInventory?.inventorySchema || 1,
-        remoteInventoryDegraded: remoteInventoryResult.degraded === true,
+        remoteInventoryDegraded: remoteInventoryResult.degraded === true || result.inventoryPreserved === true,
         remoteDiscoveryCounts: result.discoveryCounts,
         remoteRejectedDiscoveries: result.rejectedDiscoveries.length,
         remoteApprovedDiscoveries: result.approvedDiscoveries.length,
@@ -1695,17 +1703,19 @@ export class AgentManagerDaemon {
       peerName,
       mirroredAgents: result.mirroredAgents.length,
       remoteDiscoveryCounts: result.discoveryCounts,
-      remoteInventoryDegraded: remoteInventoryResult.degraded === true,
+      remoteInventoryDegraded: remoteInventoryResult.degraded === true || result.inventoryPreserved === true,
       remoteRoot: remoteRoot || null,
       remoteNodeName: remoteInventory?.nodeName || null,
+      inventoryPreserved: result.inventoryPreserved === true,
     });
     appendEvent("peer.sync.complete", {
       peerName,
       mirroredAgents: result.mirroredAgents.length,
       remoteDiscoveryCounts: result.discoveryCounts,
-      remoteInventoryDegraded: remoteInventoryResult.degraded === true,
+      remoteInventoryDegraded: remoteInventoryResult.degraded === true || result.inventoryPreserved === true,
       remoteRoot: remoteRoot || null,
       remoteNodeName: remoteInventory?.nodeName || null,
+      inventoryPreserved: result.inventoryPreserved === true,
     });
     return {
       ok: true,
@@ -1717,12 +1727,18 @@ export class AgentManagerDaemon {
     };
   }
 
-  #ingestRemotePeerRegistry(peer, remoteRegistry, remoteRoot) {
+  #ingestRemotePeerRegistry(peer, remoteRegistry, remoteRoot, previousRemoteSync = {}) {
     const remoteAgents = canonicalizeTrustedInventoryAgents(Object.values(remoteRegistry?.agents || {}));
     const rawDiscoveries = remoteRegistry?.discoveries?.local?.rows || [];
     const counts = remoteRegistry?.counts?.localDiscoveries || remoteRegistry?.discoveries?.local?.counts || discoveryCounts(rawDiscoveries);
     const approvedDiscoveries = rawDiscoveries.filter((row) => row?.approved === true || row?.disposition === "approved");
     const rejectedDiscoveries = rawDiscoveries.filter((row) => !(row?.approved === true || row?.disposition === "approved"));
+    const previouslyMirrored = Array.isArray(previousRemoteSync?.mirroredAgents) ? previousRemoteSync.mirroredAgents : [];
+    const preserveExistingMirrors =
+      previouslyMirrored.length > 0 &&
+      remoteAgents.length === 0 &&
+      approvedDiscoveries.length === 0 &&
+      Number(counts?.total || 0) === 0;
     saveRemoteDiscoverySnapshot(this.config, peer.name, {
       source: remoteRegistry?.exportPolicy || "legacy-or-unknown",
       inventorySchema: remoteRegistry?.inventorySchema || 1,
@@ -1734,6 +1750,27 @@ export class AgentManagerDaemon {
       rejectedDiscoveries,
       approvedAgents: remoteAgents,
     });
+    if (preserveExistingMirrors) {
+      this.log("peer.sync.empty_inventory_preserved", {
+        peerName: peer.name,
+        remoteRoot: remoteRoot || null,
+        preservedMirrors: previouslyMirrored.length,
+        reason: "remote-export-returned-zero-agents-and-zero-discoveries-after-prior-success",
+      });
+      appendEvent("peer.sync.empty_inventory_preserved", {
+        peerName: peer.name,
+        remoteRoot: remoteRoot || null,
+        preservedMirrors: previouslyMirrored.length,
+        reason: "remote-export-returned-zero-agents-and-zero-discoveries-after-prior-success",
+      });
+      return {
+        mirroredAgents: previouslyMirrored,
+        discoveryCounts: counts,
+        approvedDiscoveries,
+        rejectedDiscoveries,
+        inventoryPreserved: true,
+      };
+    }
     this.#pruneMirroredAgentsForPeer(peer.name, remoteAgents);
     const mirroredAgents = [];
     for (const remoteAgent of remoteAgents) {
@@ -1774,7 +1811,7 @@ export class AgentManagerDaemon {
       this.threadToAgent.delete(remoteAgent.threadId);
       void mirrored;
     }
-    return { mirroredAgents, discoveryCounts: counts, approvedDiscoveries, rejectedDiscoveries };
+    return { mirroredAgents, discoveryCounts: counts, approvedDiscoveries, rejectedDiscoveries, inventoryPreserved: false };
   }
 
   #pruneMirroredAgentsForPeer(peerName, remoteAgents) {

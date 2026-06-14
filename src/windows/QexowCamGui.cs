@@ -132,13 +132,17 @@ namespace QexowCamGui
         private readonly Button refreshButton;
         private readonly Button testButton;
         private readonly CheckBox showArchivedCheckBox;
+        private readonly System.Windows.Forms.Timer autoRefreshTimer;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private const string CamTestMailboxAgent = "CAM test, Kexau CAM test suite mailbox";
         private Dictionary<string, Dictionary<string, object>> activeThreadMetadata = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
         private readonly object daemonStartLock = new object();
+        private readonly object refreshStateLock = new object();
         private bool daemonStartAttempted = false;
         private bool daemonStartInProgress = false;
         private bool daemonRecoveryAttempted = false;
+        private bool refreshInProgress = false;
+        private bool refreshPending = false;
 
         public MainForm(Action<string> logger)
         {
@@ -259,12 +263,36 @@ namespace QexowCamGui
             outputBox.Font = new Font("Consolas", 9.0f);
             root.Controls.Add(outputBox, 0, 5);
 
+            autoRefreshTimer = new System.Windows.Forms.Timer();
+            autoRefreshTimer.Interval = 15000;
+            autoRefreshTimer.Tick += delegate { RefreshAll(true); };
+            autoRefreshTimer.Start();
         }
 
         public void RefreshAll()
         {
-            log("refresh-start");
-            outputBox.Text = AppendLine(outputBox.Text, "Refreshing CAM status...");
+            RefreshAll(false);
+        }
+
+        private void RefreshAll(bool automatic)
+        {
+            lock (refreshStateLock)
+            {
+                if (refreshInProgress)
+                {
+                    refreshPending = true;
+                    log("refresh-skip already-in-progress automatic=" + automatic);
+                    return;
+                }
+                refreshInProgress = true;
+                refreshPending = false;
+            }
+
+            log("refresh-start automatic=" + automatic);
+            if (!automatic)
+            {
+                outputBox.Text = AppendLine(outputBox.Text, "Refreshing CAM status...");
+            }
             ThreadPool.QueueUserWorkItem(delegate
             {
                 bool healthOk = false;
@@ -322,14 +350,14 @@ namespace QexowCamGui
                     InvokeUi(delegate
                     {
                         RenderPeers(peers);
-                        RenderPeerSummary(peers);
+                        RenderPeerSummary(peers, !automatic);
                     });
 
                     List<Dictionary<string, object>> agents = LoadAgents();
                     InvokeUi(delegate
                     {
                         RenderAgents(agents);
-                        RenderAgentSummary(agents);
+                        RenderAgentSummary(agents, !automatic);
                     });
                     log("agents-loaded count=" + agents.Count);
                 }
@@ -347,6 +375,20 @@ namespace QexowCamGui
                     }
                     InvokeUi(delegate { outputBox.Text = AppendLine(outputBox.Text, "Agent load error: " + ex.Message); });
                     log("agents-error " + ex.Message);
+                }
+                finally
+                {
+                    bool rerun;
+                    lock (refreshStateLock)
+                    {
+                        refreshInProgress = false;
+                        rerun = refreshPending;
+                        refreshPending = false;
+                    }
+                    if (rerun)
+                    {
+                        BeginInvoke((Action)delegate { RefreshAll(true); });
+                    }
                 }
             });
         }
@@ -404,10 +446,11 @@ namespace QexowCamGui
         {
             peersGrid.Columns.Clear();
             peersGrid.Rows.Clear();
-            foreach (string column in new[] { "name", "state", "transport", "ssh", "candidateIps", "candidateUsers", "key", "mirrored", "raw", "approved", "quarantined", "rejected", "schema", "remoteNode", "syncedAt", "blocker" })
+            foreach (string column in new[] { "ok", "name", "state", "transport", "ssh", "candidateIps", "candidateUsers", "key", "mirrored", "raw", "approved", "quarantined", "rejected", "schema", "remoteNode", "syncedAt", "blocker" })
             {
                 peersGrid.Columns.Add(column, column);
             }
+            peersGrid.Columns["ok"].HeaderText = "ok";
             peersGrid.Columns["name"].HeaderText = "peer";
             peersGrid.Columns["state"].HeaderText = "state";
             peersGrid.Columns["candidateIps"].HeaderText = "candidate IPs";
@@ -422,6 +465,7 @@ namespace QexowCamGui
             peersGrid.Columns["remoteNode"].HeaderText = "remote node";
             peersGrid.Columns["syncedAt"].HeaderText = "last sync";
             peersGrid.Columns["blocker"].HeaderText = "blocker";
+            peersGrid.Columns["ok"].FillWeight = 5;
             peersGrid.Columns["name"].FillWeight = 16;
             peersGrid.Columns["state"].FillWeight = 10;
             peersGrid.Columns["transport"].FillWeight = 9;
@@ -441,7 +485,10 @@ namespace QexowCamGui
 
             foreach (Dictionary<string, object> peer in peers)
             {
+                string state = Value(peer, "state").ToLowerInvariant();
+                bool isOk = state == "mirrored" || state == "mirrored-degraded" || state == "verified" || state == "probe-ready";
                 int rowIndex = peersGrid.Rows.Add(
+                    isOk ? "yes" : "no",
                     Value(peer, "name"),
                     Value(peer, "state"),
                     Value(peer, "transport"),
@@ -461,7 +508,6 @@ namespace QexowCamGui
                 );
                 DataGridViewRow row = peersGrid.Rows[rowIndex];
                 Color color = Color.Gray;
-                string state = Value(peer, "state").ToLowerInvariant();
                 if (state == "mirrored") color = Color.LimeGreen;
                 else if (state == "mirrored-degraded") color = Color.Goldenrod;
                 else if (state == "verified" || state == "probe-ready") color = Color.DodgerBlue;
@@ -470,22 +516,26 @@ namespace QexowCamGui
             }
         }
 
-        private void RenderAgentSummary(List<Dictionary<string, object>> agents)
+        private void RenderAgentSummary(List<Dictionary<string, object>> agents, bool emitOutputLine)
         {
             int testableCount = 0;
+            int remoteCount = 0;
             foreach (Dictionary<string, object> agent in agents)
             {
                 if (IsAgentTestable(agent)) testableCount++;
+                string route = Value(agent, "route");
+                if (!String.IsNullOrWhiteSpace(route) && !String.Equals(route, "local", StringComparison.OrdinalIgnoreCase)) remoteCount++;
             }
-            overviewLabel.Text = "Agent mappings: " + agents.Count + " total, " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited.";
-            if (agents.Count > 0)
+            overviewLabel.Text = "Agent mappings: " + agents.Count + " total, " + testableCount + " active/testable, " + remoteCount + " remote, " + (agents.Count - testableCount) + " skipped/limited.";
+            if (emitOutputLine && agents.Count > 0)
             {
-                outputBox.Text = AppendLine(outputBox.Text, "Loaded " + testableCount + " active/testable, " + (agents.Count - testableCount) + " skipped/limited agent/session mappings.");
+                outputBox.Text = AppendLine(outputBox.Text, "Loaded " + testableCount + " active/testable, " + remoteCount + " remote, " + (agents.Count - testableCount) + " skipped/limited agent/session mappings.");
             }
         }
 
-        private void RenderPeerSummary(List<Dictionary<string, object>> peers)
+        private void RenderPeerSummary(List<Dictionary<string, object>> peers, bool emitOutputLine)
         {
+            int ok = 0;
             int mirrored = 0;
             int missingKey = 0;
             int missingIp = 0;
@@ -499,6 +549,13 @@ namespace QexowCamGui
             foreach (Dictionary<string, object> peer in peers)
             {
                 string state = Value(peer, "state");
+                if (String.Equals(state, "mirrored", StringComparison.OrdinalIgnoreCase) ||
+                    String.Equals(state, "mirrored-degraded", StringComparison.OrdinalIgnoreCase) ||
+                    String.Equals(state, "verified", StringComparison.OrdinalIgnoreCase) ||
+                    String.Equals(state, "probe-ready", StringComparison.OrdinalIgnoreCase))
+                {
+                    ok++;
+                }
                 if (String.Equals(state, "mirrored", StringComparison.OrdinalIgnoreCase)) mirrored++;
                 if (String.Equals(state, "mirrored-degraded", StringComparison.OrdinalIgnoreCase)) mirrored++;
                 if (String.Equals(state, "missing-key", StringComparison.OrdinalIgnoreCase)) missingKey++;
@@ -511,8 +568,11 @@ namespace QexowCamGui
                 approvedDiscoveries += ToInt(Value(peer, "remoteApprovedDiscoveries"));
                 rejectedDiscoveries += ToInt(Value(peer, "remoteQuarantinedDiscoveries")) + ToInt(Value(peer, "remoteRejectedDiscoveries"));
             }
-            discoveryLabel.Text = "Remote discovery: " + peers.Count + " peers, " + mirrored + " mirrored, " + rawDiscoveries + " raw, " + approvedDiscoveries + " approved, " + rejectedDiscoveries + " not promoted, " + probeReady + " ready, " + probeFailed + " probe failed, " + syncFailed + " sync failed.";
-            outputBox.Text = AppendLine(outputBox.Text, "Remote discovery loaded " + peers.Count + " peer rows.");
+            discoveryLabel.Text = "Remote discovery: " + peers.Count + " peers, " + ok + " OK, " + mirrored + " mirrored, " + rawDiscoveries + " raw, " + approvedDiscoveries + " approved, " + rejectedDiscoveries + " not promoted, " + probeReady + " ready, " + probeFailed + " probe failed, " + syncFailed + " sync failed.";
+            if (emitOutputLine)
+            {
+                outputBox.Text = AppendLine(outputBox.Text, "Remote discovery loaded " + peers.Count + " peer rows; " + ok + " OK.");
+            }
         }
 
         private void TestSelectedAgent()

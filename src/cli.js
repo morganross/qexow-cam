@@ -13,6 +13,8 @@ import { allPaths, defaultCodexPath, initConfig, loadConfig } from "./config.js"
 import { readMailbox, listAgents, loadRegistry, saveRegistry, trustedInventoryExport } from "./registry.js";
 import { paths, projectRoot, readJson, writeJsonAtomic } from "./paths.js";
 import { logEvent } from "./logger.js";
+import { discoverThreads } from "./thread-discovery.js";
+import { refreshLocalRegistryFromThreads } from "./discovery-refresh.js";
 
 function usage() {
   return `Usage:
@@ -32,7 +34,8 @@ function usage() {
   cam send <agent-name> <message> [--from <agent-name>] [--correlation-id <id>] [--message-type <type>] [--strict]
   cam inbox [agent-name]
   cam logs
-  cam inventory export
+  cam inventory export [--no-refresh]
+  cam verify-rollout
   cam install-service
   cam uninstall-service`;
 }
@@ -542,7 +545,52 @@ async function commandInventory(args) {
     throw new Error("expected inventory export");
   }
   const config = loadConfig();
+  const opts = parseOptions(args.slice(1));
+  if (!opts.noRefresh) {
+    const threads = discoverThreads();
+    refreshLocalRegistryFromThreads({
+      config,
+      threads,
+      log: (type, payload) => logEvent(type, payload),
+    });
+  }
   console.log(JSON.stringify(trustedInventoryExport(config), null, 2));
+}
+
+async function commandVerifyRollout() {
+  const health = await apiRequest("GET", "/health");
+  const peersResult = await apiRequest("GET", "/peers");
+  const peers = Array.isArray(peersResult?.peers) ? peersResult.peers : [];
+  const failures = [];
+
+  if (!health?.ok) {
+    failures.push("local daemon health is not ok");
+  }
+
+  for (const peer of peers) {
+    const name = peer?.name || "(unknown-peer)";
+    const state = String(peer?.state || "").trim().toLowerCase();
+    const blockers = String(peer?.blockerSummary || "").trim();
+    if (!state) {
+      failures.push(`${name}: missing peer state`);
+      continue;
+    }
+    if (state === "mirrored" || state === "verified") continue;
+    failures.push(`${name}: state=${state}${blockers ? `; ${blockers}` : ""}`);
+  }
+
+  const summary = {
+    ok: failures.length === 0,
+    nodeName: health?.nodeName || null,
+    version: health?.version || null,
+    peerCount: peers.length,
+    failures,
+  };
+
+  console.log(JSON.stringify(summary, null, 2));
+  if (failures.length) {
+    throw new Error(`rollout verification failed for ${failures.length} peer condition(s)`);
+  }
 }
 
 async function commandNode(args) {
@@ -726,6 +774,7 @@ export async function main(args) {
   if (cmd === "inbox") return commandInbox(rest);
   if (cmd === "logs") return commandLogs();
   if (cmd === "inventory") return commandInventory(rest);
+  if (cmd === "verify-rollout") return commandVerifyRollout();
   if (cmd === "node") return commandNode(rest);
   if (cmd === "install-service" || cmd === "uninstall-service") return commandService(cmd, rest);
   throw new Error(`unknown command: ${cmd}\n${usage()}`);
