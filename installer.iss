@@ -1,6 +1,6 @@
 [Setup]
 AppName=Qexow CAM
-AppVersion=2.1.43
+AppVersion=2.1.44
 DefaultDirName={autopf}\Qexow CAM
 DefaultGroupName=Qexow CAM
 OutputDir=dist
@@ -448,7 +448,7 @@ begin
   // metadata and start the correct runtime path after files land.
   Exec(ExpandConstant('{app}\cam.exe'), 'install-service', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if IsHeadlessInstall() then begin
-    Exec(ExpandConstant('{app}\cam.exe'), 'daemon start --headless', '', SW_HIDE, ewNoWait, ResultCode);
+    Exec(ExpandConstant('{app}\cam.exe'), 'daemon launch --headless --wait-seconds 30', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end else begin
     Exec(ExpandConstant('{app}\qexow-cam-gui.exe'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
   end;

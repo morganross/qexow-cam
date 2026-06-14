@@ -51,7 +51,7 @@ import { discoverPeerFactsFromMarkdown, discoverSshKeyPathsFromMarkdown } from "
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.43";
+const CAM_VERSION = "2.1.44";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
 const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";

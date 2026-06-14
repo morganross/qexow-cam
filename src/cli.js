@@ -18,7 +18,7 @@ function usage() {
   return `Usage:
   cam init
   cam doctor
-  cam daemon start|stop|status
+  cam daemon start|launch|stop|status
   cam node enroll <name> --ssh <user@host> --key <path> --remote-root <path>
   cam node discover <peer-name> --agent <agent-name> [--wait-seconds <n>]
   cam node sync [peer-name]
@@ -297,6 +297,37 @@ async function commandDaemon(args) {
     logEvent("cli.daemon.start.complete", { pid: process.pid, inProcess: true });
     console.log(`started daemon pid=${process.pid}${opts.headless ? " (headless)" : ""}`);
     return runDaemon();
+  }
+  if (action === "launch") {
+    const opts = parseOptions(args.slice(1));
+    initConfig();
+    const childArgs = ["daemon", "start"];
+    if (opts.headless) childArgs.push("--headless");
+    const child = spawn(process.execPath, childArgs, {
+      cwd: projectRoot(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(opts.headless ? { CAM_HEADLESS: "1" } : {}),
+      },
+    });
+    child.unref();
+    const waitSeconds = Number(opts.waitSeconds || opts.wait || 30);
+    const deadline = Date.now() + Math.max(1, waitSeconds) * 1000;
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const health = await apiRequest("GET", "/health");
+        console.log(`launched daemon pid=${child.pid}${opts.headless ? " (headless)" : ""} version=${health.version || "unknown"}`);
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    throw new Error(`daemon launch did not become healthy within ${waitSeconds}s: ${lastError?.message || "no health response"}`);
   }
   if (action === "stop") {
     logEvent("cli.daemon.stop.initiating");
