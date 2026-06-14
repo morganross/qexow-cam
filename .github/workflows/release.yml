@@ -164,7 +164,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path $camHome | Out-Null
         Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"preserve_on_reinstall":true}'
         Set-Content -Path (Join-Path $camHome "mailbox.jsonl") -Value '{"preserve_on_reinstall":true}'
-        Invoke-SetupProcess -FilePath $installer -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log","/TASKS=`"preserve_state`"") -LogPath $log -Label "Installer preserve-state smoke"
+        Invoke-SetupProcess -FilePath $installer -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log","/TASKS=preserve_state") -LogPath $log -Label "Installer preserve-state smoke"
         $health = Wait-CamHealth -ExpectedVersion $expectedVersion
         Assert-CamProcessState -ExpectGui $false
         if (-not (Test-Path (Join-Path $camHome "agents.json"))) { throw "Preserve-state reinstall unexpectedly removed agents.json" }
