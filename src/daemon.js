@@ -52,12 +52,12 @@ import { discoverPeerFactsFromMarkdown, discoverSshKeyPathsFromMarkdown } from "
 
 const CAM_TEST_MAILBOX_AGENT = "CAM test, Kexau CAM test suite mailbox";
 const MAILBOX_ONLY_THREAD_SOURCES = new Set(["mailbox", "gui-only"]);
-const CAM_VERSION = "2.1.51";
+const CAM_VERSION = "2.1.52";
 const STRICT_THREAD_NOT_FOUND = /thread not found/i;
 const GUI_TEST_MESSAGE_TYPE = "cam-gui-test";
 const GUI_TEST_REPLY_MESSAGE_TYPE = "cam-gui-test-reply";
 const REMOTE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-const REMOTE_INVENTORY_TIMEOUT_MS = 90000;
+const REMOTE_INVENTORY_TIMEOUT_MS = 120000;
 const DEFAULT_REMOTE_ROOTS = [
   "/opt/qexow-cam",
   "/home/ubuntu/codex-agent-manager",
@@ -212,6 +212,8 @@ export class AgentManagerDaemon {
     this.peerSyncInterval = null;
     this.skippedThreadReasons = new Map();
     this.peerProbeAttempts = new Map();
+    this.peerSyncInflight = new Map();
+    this.peerDiscoveryPassPromise = null;
     this.docKeyPaths = [];
   }
 
@@ -1616,7 +1618,10 @@ export class AgentManagerDaemon {
 
   async #syncKnownPeers() {
     const peers = listPeers(this.config).filter((peer) => peer?.transport === "ssh" && String(peer?.ssh || "").includes("@") && peer?.key);
-    const results = await Promise.all(peers.map((peer) => this.#syncSinglePeer(peer)));
+    const results = [];
+    for (const peer of peers) {
+      results.push(await this.#syncSinglePeer(peer));
+    }
     return {
       ok: results.every((row) => row.ok !== false),
       peers: results,
@@ -1624,6 +1629,23 @@ export class AgentManagerDaemon {
   }
 
   async #syncSinglePeer(peer) {
+    const peerName = peer.name;
+    if (this.peerSyncInflight.has(peerName)) {
+      this.log("peer.sync.coalesced", { peerName });
+      return this.peerSyncInflight.get(peerName);
+    }
+    const syncPromise = this.#syncSinglePeerInner(peer);
+    this.peerSyncInflight.set(peerName, syncPromise);
+    try {
+      return await syncPromise;
+    } finally {
+      if (this.peerSyncInflight.get(peerName) === syncPromise) {
+        this.peerSyncInflight.delete(peerName);
+      }
+    }
+  }
+
+  async #syncSinglePeerInner(peer) {
     const peerName = peer.name;
     const previousRemoteSync = getPeer(this.config, peerName)?.remoteSync || {};
     if (this.#isSelfPeer(peer)) {
@@ -2825,15 +2847,24 @@ export class AgentManagerDaemon {
   }
 
   async #runPeerDiscoveryPass(source = "manual") {
-    this.log("peer.discovery.pass.start", { source });
-    try {
-      this.#refreshDocPeerFacts();
-      await this.#probeDocDiscoveredPeers();
-      await this.#syncKnownPeers();
-      this.log("peer.discovery.pass.complete", { source });
-    } catch (error) {
-      this.log("peer.discovery.pass.failed", { source, error: error.message });
+    if (this.peerDiscoveryPassPromise) {
+      this.log("peer.discovery.pass.coalesced", { source });
+      return this.peerDiscoveryPassPromise;
     }
+    this.peerDiscoveryPassPromise = (async () => {
+      this.log("peer.discovery.pass.start", { source });
+      try {
+        this.#refreshDocPeerFacts();
+        await this.#probeDocDiscoveredPeers();
+        await this.#syncKnownPeers();
+        this.log("peer.discovery.pass.complete", { source });
+      } catch (error) {
+        this.log("peer.discovery.pass.failed", { source, error: error.message });
+      } finally {
+        this.peerDiscoveryPassPromise = null;
+      }
+    })();
+    return this.peerDiscoveryPassPromise;
   }
 
   #candidateUsernames(peer) {

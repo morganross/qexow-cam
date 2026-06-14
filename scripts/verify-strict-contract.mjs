@@ -24,10 +24,10 @@ const installerShipsQueryThreads =
   installer.includes('Source: "query_threads.py"');
 
 const checks = [
-  ["package version is 2.1.51", pkg.version === "2.1.51"],
+  ["package version is 2.1.52", pkg.version === "2.1.52"],
   ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
   ["config does not hard-fail when Windows Codex is missing", config.includes('return "codex";') && !config.includes("Codex execution path not configured")],
-  ["daemon exposes CAM_VERSION 2.1.51", daemon.includes('const CAM_VERSION = "2.1.51";')],
+  ["daemon exposes CAM_VERSION 2.1.52", daemon.includes('const CAM_VERSION = "2.1.52";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["app-server spawn errors are handled", appServer.includes('this.child.on("error"') && appServer.includes("app-server.spawn.error") && appServer.includes("pending.reject(error)")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
