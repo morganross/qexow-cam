@@ -23,6 +23,15 @@ export class AppServerClient extends EventEmitter {
     this.child.stdout.on("data", (chunk) => this.#onStdout(chunk));
     this.child.stderr.setEncoding("utf8");
     this.child.stderr.on("data", (chunk) => this.log("app-server.stderr", chunk.trim()));
+    this.child.on("error", (error) => {
+      this.log("app-server.spawn.error", { error: error.message, codexPath: this.codexPath });
+      this.child = null;
+      for (const [id, pending] of this.pending) {
+        pending.reject(error);
+      }
+      this.pending.clear();
+      this.initialized = false;
+    });
     this.child.on("exit", (code, signal) => {
       this.log("app-server.exit", { code, signal });
       this.child = null;

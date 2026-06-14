@@ -15,7 +15,7 @@ export function defaultCodexPath() {
   if (process.platform !== "win32") {
     return "codex";
   }
-  throw new Error("Codex execution path not configured. Please set the CAM_CODEX_EXE environment variable or the codexPath in config.json.");
+  return "codex";
 }
 
 export function defaultNodeName() {
