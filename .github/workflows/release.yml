@@ -123,15 +123,25 @@ jobs:
           }
         }
 
+        function Assert-StaleRuntimeFileRemoved {
+          param([string]$Path, [string]$Marker, [string]$Label)
+          if (Test-Path $Path) {
+            $content = Get-Content $Path -Raw -ErrorAction SilentlyContinue
+            if ($content -match [regex]::Escape($Marker)) {
+              throw "$Label still contains stale preinstall marker"
+            }
+          }
+        }
+
         New-Item -ItemType Directory -Force -Path $staleQexow,$staleCodex | Out-Null
         Set-Content -Path (Join-Path $staleQexow "cam.exe") -Value "stale fake cam"
         Set-Content -Path (Join-Path $staleQexow "tray_windows_release.exe") -Value "stale fake tray"
         Set-Content -Path (Join-Path $staleCodex "cam.exe") -Value "stale fake codex cam"
         New-Item -ItemType Directory -Force -Path $camHome,$legacyCamHome | Out-Null
-        Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"stale":true}'
-        Set-Content -Path (Join-Path $camHome "mailbox.jsonl") -Value '{"stale":true}'
-        Set-Content -Path (Join-Path $camHome "tests.jsonl") -Value '{"stale":true}'
-        Set-Content -Path (Join-Path $camHome "config.json") -Value '{"stale_config":true}'
+        Set-Content -Path (Join-Path $camHome "agents.json") -Value '{"stale_preinstall_agents":true}'
+        Set-Content -Path (Join-Path $camHome "mailbox.jsonl") -Value '{"stale_preinstall_mailbox":true}'
+        Set-Content -Path (Join-Path $camHome "tests.jsonl") -Value '{"stale_preinstall_tests":true}'
+        Set-Content -Path (Join-Path $camHome "config.json") -Value '{"stale_preinstall_config":true}'
         Set-Content -Path (Join-Path $legacyCamHome "agents.json") -Value '{"legacy_stale":true}'
         if (Test-Path $log) { Remove-Item $log -Force }
         Invoke-SetupProcess -FilePath $installer -ArgumentList @("/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/HEADLESS","/LOG=$log") -LogPath $log -Label "Installer smoke"
@@ -142,8 +152,10 @@ jobs:
         }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\cam.exe")) { throw "Installed cam.exe missing" }
         if (-not (Test-Path "C:\Program Files\Qexow CAM\qexow-cam-gui.exe")) { throw "Installed GUI missing" }
-        if (Test-Path (Join-Path $camHome "agents.json")) { throw "Reinstall did not remove stale agents.json map" }
-        if (Test-Path (Join-Path $camHome "mailbox.jsonl")) { throw "Reinstall did not remove stale mailbox.jsonl" }
+        Assert-StaleRuntimeFileRemoved -Path (Join-Path $camHome "agents.json") -Marker "stale_preinstall_agents" -Label "agents.json"
+        Assert-StaleRuntimeFileRemoved -Path (Join-Path $camHome "mailbox.jsonl") -Marker "stale_preinstall_mailbox" -Label "mailbox.jsonl"
+        Assert-StaleRuntimeFileRemoved -Path (Join-Path $camHome "tests.jsonl") -Marker "stale_preinstall_tests" -Label "tests.jsonl"
+        Assert-StaleRuntimeFileRemoved -Path (Join-Path $camHome "config.json") -Marker "stale_preinstall_config" -Label "config.json"
         if (Test-Path (Join-Path $legacyCamHome "agents.json")) { throw "Reinstall did not remove legacy agents.json map" }
         if (Test-Path $legacyCamHome) { throw "Default reinstall did not fully remove legacy CAM home $legacyCamHome" }
         $health = Wait-CamHealth -ExpectedVersion $expectedVersion

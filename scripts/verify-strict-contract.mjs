@@ -24,10 +24,10 @@ const installerShipsQueryThreads =
   installer.includes('Source: "query_threads.py"');
 
 const checks = [
-  ["package version is 2.1.47", pkg.version === "2.1.47"],
+  ["package version is 2.1.48", pkg.version === "2.1.48"],
   ["config uses explicit default CAM port 37631", config.includes("export const DEFAULT_CAM_PORT = 37631") && config.includes("const port = configuredPort || DEFAULT_CAM_PORT")],
   ["config does not hard-fail when Windows Codex is missing", config.includes('return "codex";') && !config.includes("Codex execution path not configured")],
-  ["daemon exposes CAM_VERSION 2.1.47", daemon.includes('const CAM_VERSION = "2.1.47";')],
+  ["daemon exposes CAM_VERSION 2.1.48", daemon.includes('const CAM_VERSION = "2.1.48";')],
   ["daemon health includes version", daemon.includes("version: CAM_VERSION")],
   ["app-server spawn errors are handled", appServer.includes('this.child.on("error"') && appServer.includes("app-server.spawn.error") && appServer.includes("pending.reject(error)")],
   ["daemon supports strict thread-not-found detection", daemon.includes("STRICT_THREAD_NOT_FOUND")],
@@ -88,7 +88,7 @@ const checks = [
   ["release workflow smoke tests installer", workflow.includes("Smoke test installer") && workflow.includes("Installation process succeeded")],
   ["release workflow verifies headless daemon startup", workflow.includes("Wait-CamHealth") && workflow.includes("Headless installer did not start a healthy CAM daemon") && workflow.includes("Headless install unexpectedly launched qexow-cam-gui.exe")],
   ["release workflow tests stale per-user cleanup", workflow.includes("Programs\\Qexow CAM") && workflow.includes("assert-no-stale-installed-cam.ps1")],
-  ["release workflow tests reinstall map deletion", workflow.includes("Reinstall did not remove stale agents.json map") && workflow.includes("tests.jsonl")],
+  ["release workflow tests reinstall stale runtime cleanup", workflow.includes("Assert-StaleRuntimeFileRemoved") && workflow.includes("stale_preinstall_agents") && workflow.includes("stale_preinstall_tests")],
   ["release workflow tests uninstall full CAM home deletion", workflow.includes("Uninstall did not remove CAM home") && workflow.includes("unins000.exe")],
 ];
 
