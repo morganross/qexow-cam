@@ -16,3 +16,10 @@ local-*.json
 generated/
 *.BAK-*
 dist/
+target/
+release/
+gui/resources/bin/
+artifacts/
+target_release_verify/
+*.tgz
+remote-qexow-cam-aarch64

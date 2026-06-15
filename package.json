@@ -1,30 +1,51 @@
 {
-  "name": "qexow-cam",
-  "version": "2.1.52",
+  "name": "qexow-cam-desktop",
+  "version": "0.1.0",
   "private": true,
-  "description": "Qexow CAM — local agent registry and message bus.",
-  "type": "module",
-  "bin": {
-    "cam": "./bin/cam.js"
-  },
+  "description": "React Electron desktop GUI for Qexow CAM",
+  "main": "gui/electron/main.cjs",
   "scripts": {
-    "doctor": "node ./bin/cam.js doctor",
-    "daemon": "node ./bin/cam.js daemon start",
-    "test:smoke": "node ./scripts/smoke-local.js",
-    "test:strict-contract": "node ./scripts/verify-strict-contract.mjs",
-    "build": "node scripts/refuse-local-build.mjs",
-    "build:installer-payload": "node scripts/build-installer-payload.mjs",
-    "build:linux-package": "node scripts/build-linux-package.mjs",
-    "purge-standalone-exes": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/purge-standalone-exes.ps1",
-    "watch-workspace-exes": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/watch-workspace-exes.ps1"
+    "dev": "concurrently \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && electron gui/electron/main.cjs\"",
+    "build": "vite build",
+    "start": "electron gui/electron/main.cjs",
+    "prepare:cam-bin": "node gui/electron/prepare-cam-binary.cjs",
+    "package:win": "cargo build --release && npm run build && npm run prepare:cam-bin && electron-builder --win portable --x64"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "devDependencies": {
-    "postject": "^1.0.0-alpha.6"
+  "build": {
+    "appId": "com.qexow.cam",
+    "productName": "Qexow CAM",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "gui/electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "gui/resources/bin",
+        "to": "bin"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Qexow-CAM-${version}-Windows-${arch}.${ext}"
+    }
   },
   "dependencies": {
-    "systray2": "^2.1.4"
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "concurrently": "^9.2.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.3.0",
+    "wait-on": "^9.0.3"
   }
 }
