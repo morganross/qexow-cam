@@ -152,7 +152,10 @@ pub fn classify_row(mut row: DiscoveryRow) -> DiscoveryRow {
         row.reason = "non-canonical local workspace path".to_string();
         return row;
     }
-    if matches!(row.route, Route::Local) && !row.workspace_in_project {
+    if matches!(row.route, Route::Local)
+        && !row.workspace_in_project
+        && !has_thread_database_archive_evidence(&row)
+    {
         row.disposition = DiscoveryDisposition::Rejected;
         row.reason = match row.source {
             DiscoverySource::Rollout => "workspace is outside known project roots".to_string(),
@@ -175,6 +178,9 @@ pub fn classify_row(mut row: DiscoveryRow) -> DiscoveryRow {
         ThreadSource::AgySession => DiscoveryDisposition::Candidate,
     };
     row.reason = match row.disposition {
+        DiscoveryDisposition::Approved if has_thread_database_archive_evidence(&row) => {
+            "trusted Codex thread database archive metadata".to_string()
+        }
         DiscoveryDisposition::Approved => "trusted local session with id and workspace".to_string(),
         DiscoveryDisposition::Candidate => {
             if row.thread_source == ThreadSource::AgySession {
@@ -187,6 +193,12 @@ pub fn classify_row(mut row: DiscoveryRow) -> DiscoveryRow {
         DiscoveryDisposition::Quarantined | DiscoveryDisposition::Rejected => row.reason,
     };
     row
+}
+
+fn has_thread_database_archive_evidence(row: &DiscoveryRow) -> bool {
+    row.source == DiscoverySource::ThreadDatabase
+        && row.chat_status_source == ChatStatusSource::ThreadDatabase
+        && row.chat_status != ChatStatus::Unknown
 }
 
 pub fn classify_rows(rows: Vec<DiscoveryRow>) -> Vec<DiscoveryRow> {

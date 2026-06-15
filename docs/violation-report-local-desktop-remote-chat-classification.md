@@ -8,9 +8,15 @@ CAM currently fails to combine remote CAM inventory with local CAM's own Codex D
 
 This is an extreme major violation of the intended CAM discovery and classification plan.
 
-The current implementation treats remote chat status as mostly owned by remote CAM inventory, while local CAM's Desktop database knowledge is used only for local agents.
+The current implementation treats remote chat metadata status as mostly owned by remote CAM inventory, while local CAM's Desktop database knowledge is used only for local agents.
 
 That is wrong.
+
+Terminology correction: CAM does not manage chats directly.
+
+CAM manages chat metadata records.
+
+When this report says remote chat classification, the precise meaning is remote chat metadata classification.
 
 ## Expected Behavior
 
@@ -19,8 +25,8 @@ Local CAM should combine multiple truthful sources:
 - Remote CAM inventory from the remote node.
 - Local CAM's own Codex Desktop knowledge.
 - Local Desktop's knowledge of remote nodes.
-- Local Desktop's knowledge of remote chats.
-- Local Desktop's active-versus-archived classification for remote chats when Desktop has that information.
+- Local Desktop's knowledge of remote chat metadata.
+- Local Desktop's active-versus-archived classification for remote chat metadata when Desktop has that information.
 
 The design expectation is not either/or.
 
@@ -28,7 +34,7 @@ The design expectation is combined evidence.
 
 Remote CAM should classify its own local chats when it has enough information.
 
-Local CAM should also use its own Desktop knowledge to classify remote chats when Desktop has the archive membership state.
+Local CAM should also use its own Desktop knowledge to classify remote chat metadata when Desktop has the archive membership state.
 
 ## Current Incorrect Behavior
 
@@ -42,7 +48,7 @@ Local CAM does not currently perform the missing bridge step:
 local Codex Desktop remote-chat knowledge -> CAM remote mirror chat_status
 ```
 
-Because that bridge is missing, remote chats that local Desktop knows are active or archived may remain `unknown` in CAM, or may depend only on what remote CAM can prove locally.
+Because that bridge is missing, remote chat metadata that local Desktop knows is active or archived may remain `unknown` in CAM, or may depend only on what remote CAM can prove locally.
 
 This means CAM is ignoring one of its most important local truth sources.
 
@@ -70,7 +76,7 @@ The current implementation violates that plan by failing to use local Desktop's 
 
 The GUI can show incomplete or misleading remote chat classification.
 
-Remote chats visible as active or archived in local Codex Desktop may appear as `unknown` in CAM.
+Remote chat metadata visible as active or archived in local Codex Desktop may appear as `unknown` in CAM.
 
 CAM may make worse routing decisions because it lacks local Desktop's remote-chat archive membership data.
 
@@ -86,7 +92,7 @@ Remote chat classification should use a layered evidence model:
 
 1. Ask remote CAM what the remote node knows.
 
-2. Ask local Codex Desktop what the local Desktop knows about remote nodes and remote chats.
+2. Ask local Codex Desktop what the local Desktop knows about remote nodes and remote chat metadata.
 
 3. Merge those facts.
 
@@ -105,8 +111,8 @@ Implement a local Desktop remote-chat classification bridge.
 The bridge must discover:
 
 - Which remote nodes Codex Desktop knows about.
-- Which remote chats Codex Desktop knows about.
-- The local Desktop archive state for those remote chats.
+- Which remote chat metadata Codex Desktop knows about.
+- The local Desktop archive state for that remote chat metadata.
 - The mapping between Desktop remote chat identity and CAM remote mirror agent identity.
 
 Then CAM must merge that evidence into remote mirror agents.
@@ -124,7 +130,7 @@ local_desktop_remote_chat_state
 The exact source name should be chosen during implementation, but it must clearly mean:
 
 ```text
-local Desktop archive evidence about a remote chat
+local Desktop archive evidence about remote chat metadata
 ```
 
 ## Required GUI Behavior
@@ -132,7 +138,7 @@ local Desktop archive evidence about a remote chat
 The GUI must show:
 
 - Remote CAM's classification, if available.
-- Local Desktop's classification for the same remote chat, if available.
+- Local Desktop's classification for the same remote chat metadata, if available.
 - The merged CAM classification.
 - The source of the merged classification.
 - Any disagreement between remote CAM and local Desktop.
@@ -146,8 +152,8 @@ Logs must show:
 - Whether local Desktop remote-chat discovery was attempted.
 - Which Desktop data source was read.
 - How many remote nodes were found in Desktop data.
-- How many remote chats were found in Desktop data.
-- How many remote chats matched CAM remote mirror agents.
+- How many remote chat metadata records were found in Desktop data.
+- How many remote chat metadata records matched CAM remote mirror agents.
 - How many classifications were applied.
 - How many records could not be matched.
 - Any source disagreement.

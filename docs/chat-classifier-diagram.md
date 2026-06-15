@@ -153,9 +153,9 @@ flowchart LR
     D --> E["Local remote_mirror agent"]
 ```
 
-Local CAM should not invent remote chat status from weak local copies.
+Local CAM should not invent remote chat metadata status from weak local copies.
 
-If local desktop Codex has a separate, durable, archive-capable record for remote chats, it may become an additional source later. Until that source is identified and documented, it is not authoritative classifier evidence.
+If local desktop Codex has a separate, durable, archive-capable metadata record for remote chats, it may become an additional source later. Until that source is identified and documented, it is not authoritative classifier evidence.
 
 ## Merge Rule
 
@@ -203,4 +203,3 @@ flowchart TD
 - `active` or `archived` with `chat_status_source = unknown` is suspect state and should be repaired only from archive-capable evidence.
 - The GUI must show both `chat_status` and `chat_status_source`.
 - Logs must make the classifier source visible.
-

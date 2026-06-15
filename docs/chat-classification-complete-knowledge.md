@@ -4,9 +4,42 @@ Last updated: 2026-06-15.
 
 Purpose: record everything currently known about how CAM should classify chats as active, archived, or unknown.
 
+## Terminology Correction
+
+CAM does not manage chats directly.
+
+CAM does not care about chat contents as the classification object.
+
+CAM cares about metadata of chats.
+
+When this document says chat classification, remote chat classification, or chat enrollment, the precise meaning is:
+
+```text
+classification, enrollment, and routing of chat metadata records
+```
+
+The managed object is metadata such as:
+
+```text
+thread_id
+title
+cwd
+peer
+route
+archive status
+status source
+updated timestamp
+registry identity
+delivery proof fields
+```
+
+The chat itself belongs to the provider.
+
+CAM manages the metadata needed to find it, address it, classify it, route to it, monitor it, heal it, recover it, and explain it.
+
 ## Core Meaning
 
-CAM chat classification is about archive membership.
+CAM chat metadata classification is about archive membership.
 
 For CAM:
 
@@ -152,7 +185,7 @@ The corrected behavior is:
 inventory export includes explicit CAM agents plus classified Codex discovery rows from the remote thread database
 ```
 
-This lets local CAM mirror remote chats even when the remote node has not permanently promoted every discovered chat into a CAM agent.
+This lets local CAM mirror remote chat metadata even when the remote node has not permanently promoted every discovered metadata record into a CAM agent.
 
 Inventory-only remote mirror records are synthesized for export.
 
@@ -179,7 +212,7 @@ The `last_error` note on an inventory-only mirror is explanatory provenance, not
 
 ## Local CAM Peer Sync Classification
 
-Local CAM gets remote chat classification through `peer sync`.
+Local CAM gets remote chat metadata classification through `peer sync`.
 
 Flow:
 
@@ -221,7 +254,7 @@ The 7 unknown records were existing CAM agents without archive-capable thread ev
 
 ## Local Desktop Overlay
 
-Local CAM should also use local Codex Desktop knowledge when local Desktop has archive-capable evidence for a remote chat.
+Local CAM should also use local Codex Desktop knowledge when local Desktop has archive-capable evidence for remote chat metadata.
 
 This is a second layer.
 
@@ -563,7 +596,7 @@ Codex DB: /home/ubuntu/.codex/state_5.sqlite when Codex is used there
 
 ## Open Truths
 
-Local Desktop may know remote nodes without locally caching archive-capable records for every remote chat.
+Local Desktop may know remote nodes without locally caching archive-capable metadata records for every remote chat.
 
 Remote CLI nodes may have chats started by:
 
@@ -601,4 +634,3 @@ Every source and failure must be loud, visible, and inspectable.
 Never let promotion policy hide classification evidence.
 
 Never let weak evidence masquerade as active/archive truth.
-
