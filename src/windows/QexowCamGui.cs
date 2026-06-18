@@ -135,7 +135,7 @@ namespace QexowCamGui
             log = logger;
             Text = "Qexow CAM Status";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(1100, 720);
+            Size = new Size(1250, 800);
             MinimumSize = new Size(840, 560);
             Font = new Font("Segoe UI", 9.0f);
 
@@ -144,9 +144,9 @@ namespace QexowCamGui
             root.RowCount = 4;
             root.ColumnCount = 1;
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 70));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 30));
             Controls.Add(root);
 
             Panel header = new Panel();
