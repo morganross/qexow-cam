@@ -61,14 +61,44 @@ export function saveRegistry(registry) {
   writeJsonAtomic(paths().registry, registry);
 }
 
+export function normalizeName(text) {
+  if (!text) return "";
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function upsertAgent(config, partial) {
   if (!partial?.name) throw new Error("agent name is required");
   const registry = loadRegistry(config);
   const now = new Date().toISOString();
-  const existing = registry.agents[partial.name] || {};
+
+  // Look up existing agent flexibly to preserve metadata
+  let existingKey = null;
+  let existing = {};
+  if (partial.threadId && registry.agents[partial.threadId]) {
+    existingKey = partial.threadId;
+    existing = registry.agents[partial.threadId];
+  } else if (partial.name && registry.agents[partial.name]) {
+    existingKey = partial.name;
+    existing = registry.agents[partial.name];
+  } else {
+    for (const [k, a] of Object.entries(registry.agents)) {
+      if ((partial.threadId && a.threadId === partial.threadId) || a.name === partial.name) {
+        existingKey = k;
+        existing = a;
+        break;
+      }
+    }
+  }
+
   const agent = {
     name: partial.name,
-    node: partial.node || registry.nodeName || config.nodeName,
+    node: partial.node || registry.nodeName || config?.nodeName,
     cwd: partial.cwd || existing.cwd || process.cwd(),
     threadId: partial.threadId ?? existing.threadId ?? null,
     activeTurnId: partial.activeTurnId ?? existing.activeTurnId ?? null,
@@ -82,26 +112,76 @@ export function upsertAgent(config, partial) {
     lastDelivery: partial.lastDelivery ?? existing.lastDelivery ?? null,
     threadSource: partial.threadSource !== undefined ? partial.threadSource : (existing.threadSource ?? "codex"),
   };
-  registry.agents[partial.name] = agent;
+
+  const nextKey = agent.threadId || agent.name;
+
+  if (existingKey && existingKey !== nextKey) {
+    delete registry.agents[existingKey];
+  }
+
+  registry.agents[nextKey] = agent;
   saveRegistry(registry);
   return agent;
 }
 
-export function setAgent(config, name, changes) {
+export function setAgent(config, query, changes) {
   const registry = loadRegistry(config);
-  const agent = registry.agents[name];
-  if (!agent) throw new Error(`unknown agent: ${name}`);
+  let agentKey = null;
+  let agent = registry.agents[query];
+  if (agent) {
+    agentKey = query;
+  } else {
+    for (const [k, a] of Object.entries(registry.agents)) {
+      if (a.threadId === query || a.name === query || normalizeName(a.name) === normalizeName(query)) {
+        agentKey = k;
+        agent = a;
+        break;
+      }
+    }
+  }
+  if (!agent) throw new Error(`unknown agent: ${query}`);
+
   Object.assign(agent, changes, { updatedAt: new Date().toISOString() });
+
+  const nextKey = agent.threadId || agent.name;
+  if (agentKey !== nextKey) {
+    delete registry.agents[agentKey];
+    registry.agents[nextKey] = agent;
+  }
+
   saveRegistry(registry);
   return agent;
 }
 
-export function getAgent(config, name) {
-  return loadRegistry(config).agents[name] || null;
+export function getAgent(config, query) {
+  if (!query) return null;
+  const registry = loadRegistry(config);
+  if (registry.agents[query]) return registry.agents[query];
+
+  for (const a of Object.values(registry.agents)) {
+    if (a.threadId === query || a.name === query) {
+      return a;
+    }
+  }
+
+  const normalizedQuery = normalizeName(query);
+  for (const a of Object.values(registry.agents)) {
+    if (normalizeName(a.name) === normalizedQuery) {
+      return a;
+    }
+  }
+  return null;
 }
 
 export function listAgents(config) {
   return Object.values(loadRegistry(config).agents).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function getMostRecentlyUsedAgent(config) {
+  const agents = Object.values(loadRegistry(config).agents);
+  if (!agents.length) return null;
+  agents.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+  return agents[0];
 }
 
 export function appendEvent(type, payload) {
@@ -118,7 +198,21 @@ export function appendMailbox(message) {
 
 export function readMailbox(agentName = null) {
   const rows = readJsonl(paths().mailbox);
-  return agentName ? rows.filter((row) => row.targetAgent === agentName) : rows;
+  if (!agentName) return rows;
+
+  const registry = loadRegistry();
+  const targetIds = new Set([agentName, normalizeName(agentName)]);
+  for (const a of Object.values(registry.agents)) {
+    if (a.threadId === agentName || a.name === agentName || normalizeName(a.name) === normalizeName(agentName)) {
+      if (a.threadId) targetIds.add(a.threadId);
+      targetIds.add(a.name);
+      targetIds.add(normalizeName(a.name));
+    }
+  }
+
+  return rows.filter((row) => {
+    return targetIds.has(row.targetAgent) || targetIds.has(normalizeName(row.targetAgent));
+  });
 }
 
 export function pendingMailbox(agentName) {

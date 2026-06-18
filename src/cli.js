@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { apiRequest } from "./api.js";
 import { allPaths, defaultCodexPath, initConfig, loadConfig } from "./config.js";
-import { readMailbox, listAgents, loadRegistry, saveRegistry } from "./registry.js";
+import { readMailbox, listAgents, loadRegistry, saveRegistry, getMostRecentlyUsedAgent, getAgent, normalizeName } from "./registry.js";
 import { paths, readJson, writeJsonAtomic } from "./paths.js";
 import { logEvent } from "./logger.js";
 
@@ -322,7 +322,11 @@ async function commandAgent(args) {
     return;
   }
   if (action === "resume") {
-    const name = args[1];
+    let name = args[1];
+    if (!name) {
+      const mru = getMostRecentlyUsedAgent(loadConfig());
+      if (mru) name = mru.name;
+    }
     if (!name) throw new Error("agent name is required");
     const result = await apiRequest("POST", "/agents/resume", { name });
     console.log(JSON.stringify(result.agent, null, 2));
@@ -340,15 +344,24 @@ async function commandAgent(args) {
     return;
   }
   if (action === "status") {
-    const name = args[1];
-    const agent = listAgents(loadConfig()).find((item) => item.name === name);
+    let name = args[1];
+    if (!name) {
+      const mru = getMostRecentlyUsedAgent(loadConfig());
+      if (mru) name = mru.name;
+    }
+    if (!name) throw new Error("agent name is required");
+    const agent = getAgent(loadConfig(), name);
     if (!agent) throw new Error(`unknown agent: ${name}`);
     console.log(JSON.stringify(agent, null, 2));
     return;
   }
   if (action === "set-model") {
     const opts = parseOptions(args.slice(1));
-    const name = opts._[0];
+    let name = opts._[0];
+    if (!name) {
+      const mru = getMostRecentlyUsedAgent(loadConfig());
+      if (mru) name = mru.name;
+    }
     if (!name) throw new Error("agent name is required");
     if ("recreate" in opts) {
       throw new Error("--recreate is forbidden; model changes must preserve the existing chat/session/agent mapping");
@@ -369,7 +382,11 @@ async function commandAgent(args) {
   }
   if (action === "read") {
     const opts = parseOptions(args.slice(1));
-    const name = opts._[0];
+    let name = opts._[0];
+    if (!name) {
+      const mru = getMostRecentlyUsedAgent(loadConfig());
+      if (mru) name = mru.name;
+    }
     if (!name) throw new Error("agent name is required");
     let url = `/agents/read?name=${encodeURIComponent(name)}&includeTurns=true`;
     if (opts.turns) url += `&turns=${opts.turns}`;
@@ -439,14 +456,29 @@ function summarizeThread(thread) {
 
 async function commandSend(args) {
   const opts = parseOptions(args);
-  const targetAgent = opts._[0];
-  const message = opts._.slice(1).join(" ");
+  let targetAgent = opts._[0];
+  let message = opts._.slice(1).join(" ");
+
+  if (targetAgent && !message) {
+    const config = loadConfig();
+    const existing = getAgent(config, targetAgent);
+    if (!existing) {
+      const mru = getMostRecentlyUsedAgent(config);
+      if (mru) {
+        message = targetAgent;
+        targetAgent = mru.name;
+      }
+    }
+  }
+
   if (!targetAgent || !message) throw new Error("usage: cam send <agent-name> <message>");
   const payload = {
     targetAgent,
     message,
     sourceAgent: opts.from || "operator",
     sourceNode: opts.sourceNode || os.hostname(),
+    correlationId: opts.correlationId || null,
+    messageType: opts.messageType || null,
   };
   try {
     const result = await apiRequest("POST", "/send", payload);

@@ -27,6 +27,7 @@ import {
   saveRegistry,
   setAgent,
   upsertAgent,
+  normalizeName,
 } from "./registry.js";
 import { paths, writeJsonAtomic, readJson } from "./paths.js";
 import { logEvent, enforceRetention } from "./logger.js";
@@ -828,32 +829,11 @@ export class AgentManagerDaemon {
 
       const activeThreadIds = new Set();
 
-      const normalizeName = (text) => {
-        if (!text) return "";
-        return text
-          .toLowerCase()
-          .replace(/[^a-z0-9\s-]/g, "")
-          .trim()
-          .replace(/[\s_]+/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-+|-+$/g, "");
-      };
-
       for (const thread of threads) {
         const tid = thread.id;
         activeThreadIds.add(tid);
 
-        let name = normalizeName(thread.agent_nickname);
-        if (!name) {
-          name = normalizeName(thread.title);
-        }
-        if (!name) {
-          name = `agent-${tid.substring(0, 8)}`;
-        }
-        if (name && !name.endsWith("-agent")) {
-          name = `${name}-agent`;
-        }
-
+        let name = thread.agent_nickname || thread.title || `agent-${tid.substring(0, 8)}`;
         let cwd = thread.cwd;
         if (!cwd || cwd === "outside-of-project") {
           const errMsg = `Thread ${tid} (${name}) is missing a valid workspace path. Skipping registry sync.`;
@@ -865,46 +845,43 @@ export class AgentManagerDaemon {
           cwd = cwd.substring(4);
         }
 
+        // Deduplicate name against all other agents' normalized names
+        let uniqueName = name;
+        let counter = 1;
+        const currentNormalizedNames = new Set(
+          listAgents(this.config)
+            .filter(a => a.threadId !== tid)
+            .map(a => normalizeName(a.name))
+        );
+        while (currentNormalizedNames.has(normalizeName(uniqueName))) {
+          counter++;
+          uniqueName = `${name}-${counter}`;
+        }
+
         if (existingThreadMap.has(tid)) {
           const agent = existingThreadMap.get(tid);
           
           // If the agent name changed, rename it
-          if (agent.name !== name) {
-            let uniqueName = name;
-            let counter = 1;
-            const currentNames = new Set(listAgents(this.config).map(a => a.name));
-            currentNames.delete(agent.name);
-            while (currentNames.has(uniqueName)) {
-              counter++;
-              uniqueName = `${name}-${counter}`;
-            }
-            
-            if (agent.name !== uniqueName) {
-              try {
-                const p = paths();
-                const currentRegistry = readJson(p.registry, { agents: {} });
-                if (currentRegistry.agents && currentRegistry.agents[agent.name]) {
-                  delete currentRegistry.agents[agent.name];
-                  currentRegistry.updatedAt = new Date().toISOString();
-                  writeJsonAtomic(p.registry, currentRegistry);
-                  this.log("sync.agent.renamed.delete-old", { oldName: agent.name, newName: uniqueName, threadId: tid });
-                }
-                
-                // cwd has already been resolved and normalized
-                
-                upsertAgent(this.config, {
-                  name: uniqueName,
-                  cwd,
-                  threadId: tid,
-                  status: agent.status || "idle",
-                  threadSource: thread.thread_source,
-                });
-                this.threadToAgent.set(tid, uniqueName);
-                this.log("sync.agent.renamed.created-new", { oldName: agent.name, newName: uniqueName, threadId: tid });
-                continue;
-              } catch (e) {
-                this.log("sync.agent.rename.failed", { threadId: tid, oldName: agent.name, newName: uniqueName, error: e.message });
-              }
+          if (agent.name !== uniqueName) {
+            upsertAgent(this.config, {
+              name: uniqueName,
+              cwd,
+              threadId: tid,
+              status: agent.status || "idle",
+              threadSource: thread.thread_source,
+              updatedAt: thread.updatedAt || agent.updatedAt || undefined,
+            });
+            this.threadToAgent.set(tid, uniqueName);
+            this.log("sync.agent.renamed", { oldName: agent.name, newName: uniqueName, threadId: tid });
+            continue;
+          }
+          
+          // Keep updatedAt in sync if thread has a newer timestamp
+          if (thread.updatedAt) {
+            const threadTime = new Date(thread.updatedAt).getTime();
+            const agentTime = new Date(agent.updatedAt || 0).getTime();
+            if (threadTime > agentTime) {
+              setAgent(this.config, agent.name, { updatedAt: new Date(threadTime).toISOString() });
             }
           }
           
@@ -912,16 +889,7 @@ export class AgentManagerDaemon {
           continue;
         }
 
-        let uniqueName = name;
-        let counter = 1;
-        const currentNames = new Set(listAgents(this.config).map(a => a.name));
-        while (currentNames.has(uniqueName)) {
-          counter++;
-          uniqueName = `${name}-${counter}`;
-        }
-
-        // cwd has already been resolved and normalized
-
+        // Create new agent mapping
         try {
           const agent = upsertAgent(this.config, {
             name: uniqueName,
@@ -929,6 +897,7 @@ export class AgentManagerDaemon {
             threadId: tid,
             status: "idle",
             threadSource: thread.thread_source,
+            updatedAt: thread.updatedAt || undefined,
           });
           this.threadToAgent.set(tid, uniqueName);
           appendEvent("agent.created", { agent });
